@@ -22,10 +22,10 @@ def existing_dir(path_str: str) -> str:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Helper for gapfiller")
-    parser.add_argument("--source-lat", type=str, required=True, help="Source latitude (any GeoPandas-compatible format)")
-    parser.add_argument("--source-lon", type=str, required=True, help="Source longitude (any GeoPandas-compatible format)")
-    parser.add_argument("--dest-lat", type=str, required=True, help="Destination latitude (any GeoPandas-compatible format)")
-    parser.add_argument("--dest-lon", type=str, required=True, help="Destination longitude (any GeoPandas-compatible format)")
+    parser.add_argument("--source-lat", type=float, required=True, help="Source latitude (any GeoPandas-compatible format)")
+    parser.add_argument("--source-lon", type=float, required=True, help="Source longitude (any GeoPandas-compatible format)")
+    parser.add_argument("--dest-lat", type=float, required=True, help="Destination latitude (any GeoPandas-compatible format)")
+    parser.add_argument("--dest-lon", type=float, required=True, help="Destination longitude (any GeoPandas-compatible format)")
     parser.add_argument(
         "--budget",
         type=float,
@@ -48,17 +48,13 @@ if __name__ == "__main__":
     parser.add_argument("--bin-path", type=str, default="src/release", help="Location of local_search")
     args = parser.parse_args()
 
-    source_lat = float(args.source_lat)
-    source_lon = float(args.source_lon)
-    dest_lat = float(args.dest_lat)
-    dest_lon = float(args.dest_lon)
-
     swath = args.swath
 
     command = "{bin_path}/local_search --unmapped {unmapped} --land {land} --dst_srs ESRI:54009 --budget {budget} --plan {plan}"
 
-    line = LineString([(source_lon, source_lat), (dest_lon, dest_lat)])
-    budget = float(args.budget) + line.length
+    line = LineString([(args.source_lon, args.source_lat), (args.dest_lon, args.dest_lat)])
+    transformer = Transformer.from_crs(4326, 3857)
+    budget = args.budget +  LineString([transformer.transform(*c) for c in line.coords]).length
 
     line_gdf = gpd.GeoDataFrame(
         geometry=[line],
