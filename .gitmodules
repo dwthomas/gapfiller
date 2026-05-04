@@ -1,3 +1,0 @@
-[submodule "beam"]
-	path = beam
-	url = git@github.com:dwthomas/Sonar-Beam-Model.git
