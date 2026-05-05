@@ -64,8 +64,8 @@ if __name__ == "__main__":
         geometry=[line],
         crs=wgs84,
     )
-    metric_line = line_gdf.to_crs(utils.metric_crs)
-    budget = float(args.budget) + float(metric_line.geometry[0].length)
+
+    budget = args.budget
 
     gebco_folder = args.gebco_dir
 
