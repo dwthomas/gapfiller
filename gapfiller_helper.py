@@ -46,6 +46,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--swath", action="store_true", help="Emit swath in addition to centerline.", default=False)
     parser.add_argument("--bin-path", type=str, default="src/release", help="Location of local_search")
+    parser.add_argument("--output-file-path", type=str, default=None, help="Path for GeoJSON. Exclude for stdout")
     args = parser.parse_args()
 
     source_lat = float(args.source_lat)
@@ -98,4 +99,9 @@ if __name__ == "__main__":
         if swath:
             swath_gdf = m.survey_line_3D(output_gdf)
             output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf[0]], ignore_index=True), crs = output_gdf.crs)
-        print(output_gdf.to_json())    
+
+        if args.output_file_path:
+            with open(args.output_file_path, "w") as f:
+                f.write(output_gdf.to_json())
+        else:
+            print(output_gdf.to_json())  
