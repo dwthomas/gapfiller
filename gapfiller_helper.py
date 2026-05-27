@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 import argparse
 import sys
+import faulthandler
 from pathlib import Path
 import pandas as pd
 import geopandas as gpd
@@ -13,6 +14,9 @@ import subprocess
 from beam import utils
 
 wgs84 = CRS.from_epsg(4326)
+
+# Enable faulthandler to print Python tracebacks on fatal errors (SIGSEGV, etc.)
+faulthandler.enable(file=sys.stderr, all_threads=True)
 
 def existing_dir(path_str: str) -> str:
     path = Path(path_str)
@@ -85,7 +89,7 @@ if __name__ == "__main__":
                 budget=budget,
                 plan=plan_output_path,
             )
-        print(cmd)
+        # print(cmd)
         result = subprocess.run(
             cmd,
             shell=True,
@@ -99,4 +103,7 @@ if __name__ == "__main__":
         if swath:
             swath_gdf = m.survey_line_3D(output_gdf)
             output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf[0]], ignore_index=True), crs = output_gdf.crs)
+        output_gdf = output_gdf.to_crs(utils.metric_crs)
+        output_gdf['geometry'] = output_gdf.geometry.simplify(2000, preserve_topology=True)
+        output_gdf = output_gdf.to_crs(utils.wgs84)
         print(output_gdf.to_json(), flush=True)    
