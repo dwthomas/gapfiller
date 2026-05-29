@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     swath = args.swath
 
-    command = "{bin_path}/local_search --unmapped {unmapped} --land {land} --dst_srs ESRI:54009 --budget {budget} --plan {plan}"
+    command = "{bin_path}/local_search --unmapped {unmapped} --land {land} --budget {budget} --plan {plan}"
 
     line = LineString([(source_lon, source_lat), (dest_lon, dest_lat)])
     budget = float(args.budget) + line.length
@@ -84,6 +84,7 @@ if __name__ == "__main__":
                 budget=budget,
                 plan=plan_output_path,
             )
+        print(cmd)
         result = subprocess.run(
             cmd,
             shell=True,
