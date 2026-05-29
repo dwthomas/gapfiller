@@ -62,12 +62,13 @@ if __name__ == "__main__":
     command = "{bin_path}/local_search --unmapped {unmapped} --land {land} --budget {budget} --plan {plan}"
 
     line = LineString([(source_lon, source_lat), (dest_lon, dest_lat)])
-    budget = float(args.budget) + line.length
 
     line_gdf = gpd.GeoDataFrame(
         geometry=[line],
         crs=wgs84,
     )
+
+    budget = args.budget
 
     gebco_folder = args.gebco_dir
 
