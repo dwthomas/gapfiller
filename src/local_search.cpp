@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <boost/program_options.hpp>
+#include <cmath>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -13,6 +14,39 @@
 #include <functional>
 
 namespace po = boost::program_options;
+
+// Calculate centroid of points, handling date line wrapping
+std::pair<double, double> calculateCentroid(const std::vector<OGRPoint>& points) {
+    if (points.empty()) {
+        return {0.0, 0.0};
+    }
+    
+    double sum_lat = 0.0;
+    double sum_lon_x = 0.0;  // sum of cos(lon)
+    double sum_lon_y = 0.0;  // sum of sin(lon)
+    
+    for (const auto& point : points) {
+        double lat = point.getY();
+        double lon = point.getX();
+        
+        sum_lat += lat;
+        
+        // Convert to radians and use unit vector approach for longitude
+        // This handles date line wrapping correctly
+        double lon_rad = lon * M_PI / 180.0;
+        sum_lon_x += std::cos(lon_rad);
+        sum_lon_y += std::sin(lon_rad);
+    }
+    
+    double n = static_cast<double>(points.size());
+    double avg_lat = sum_lat / n;
+    
+    // Calculate average longitude from the unit vectors
+    double avg_lon_rad = std::atan2(sum_lon_y / n, sum_lon_x / n);
+    double avg_lon = avg_lon_rad * 180.0 / M_PI;
+    
+    return {avg_lat, avg_lon};
+}
 
 OGRPoint * closestPointOnPolygon(const OGRPolygon &polygon, const OGRPoint &point) {
     OGRPoint * closestPoint = new OGRPoint();
@@ -289,7 +323,7 @@ desc.add_options()
     ("unmapped", po::value<std::string>(&unmapped_file)->required(), "Unmapped geojson file")
     ("land", po::value<std::string>(&land_file)->required(), "Land geojson file")
     ("plan", po::value<std::string>()->required(), "Plan geojson file")
-    ("dst_srs", po::value<std::string>()->required(), "Destination spatial reference system (CRS)")
+    // ("dst_crs", po::value<std::string>()->required(), "Destination spatial reference system (CRS)")
     ("budget", po::value<double>()->default_value(100000.0), "Budget for path length");
 
   po::variables_map vm;
@@ -431,31 +465,38 @@ desc.add_options()
     GDALClose(ds_land);
     return 1;
   }
-  OGRSpatialReference srcSRS = *spatialRef;
+  // Calculate centroid of the plan points
+  auto [center_lat, center_lon] = calculateCentroid(initial_plan);
+  
+  std::cerr << "Plan centroid: (" << center_lat << ", " << center_lon << ")" << std::endl;
+  
+  // Create local azimuthal equidistant projection centered at plan centroid
   OGRSpatialReference dstSRS;
-  std::string dst_srs_input = vm["dst_srs"].as<std::string>();
-  if (dstSRS.SetFromUserInput(dst_srs_input.c_str()) != OGRERR_NONE) {
-    std::cerr << "Failed to set destination spatial reference from input: "
-              << dst_srs_input << std::endl;
+  std::string aeqd_proj4 = "+proj=aeqd +lat_0=" + std::to_string(center_lat) + 
+                            " +lon_0=" + std::to_string(center_lon) + 
+                            " +datum=WGS84 +units=m";
+  
+  if (dstSRS.SetFromUserInput(aeqd_proj4.c_str()) != OGRERR_NONE) {
+    std::cerr << "Failed to set local AEQD spatial reference: " << aeqd_proj4 << std::endl;
     GDALClose(ds_unmapped);
     GDALClose(ds_land);
     return 1;
   }
+  
+  std::cerr << "Using local AEQD projection: " << aeqd_proj4 << std::endl;
 
   // Create a coordinate transformation
   OGRCoordinateTransformation *transform =
-      OGRCreateCoordinateTransformation(&srcSRS, &dstSRS);
+      OGRCreateCoordinateTransformation(&planSrcSRS, &dstSRS);
   if (!transform) {
-    std::cerr << "Failed to create coordinate transformation to "
-              << dst_srs_input << "." << std::endl;
+    std::cerr << "Failed to create coordinate transformation to AEQD." << std::endl;
     return 1;
   }
 
   // Transform unmapped polygons
   for (auto &polygon : unmapped_polygons) {
     if (polygon->transform(transform) != OGRERR_NONE) {
-      std::cerr << "Failed to transform an unmapped polygon to "
-                << dst_srs_input << "." << std::endl;
+      std::cerr << "Failed to transform an unmapped polygon to AEQD." << std::endl;
     }
   }
 
@@ -468,26 +509,23 @@ desc.add_options()
   // Transform land polygons
   for (auto &polygon : land_polygons) {
     if (polygon->transform(transform) != OGRERR_NONE) {
-      std::cerr << "Failed to transform a land polygon to " << dst_srs_input
-                << "." << std::endl;
+      std::cerr << "Failed to transform a land polygon to AEQD." << std::endl;
     }
   }
 
   OGRCoordinateTransformation *planTransform =
       OGRCreateCoordinateTransformation(&planSrcSRS, &dstSRS);
   if (!planTransform) {
-    std::cerr << "Failed to create plan coordinate transformation to "
-              << dst_srs_input << "." << std::endl;
+    std::cerr << "Failed to create plan coordinate transformation to AEQD." << std::endl;
     return 1;
   }
 
-  // Transform plan points from plan CRS (WGS84 by default) to dst_srs.
+  // Transform plan points from plan CRS (WGS84 by default) to AEQD.
   for (auto &point : initial_plan) {
     double x = point.getX();
     double y = point.getY();
     if (!planTransform->Transform(1, &x, &y)) {
-      std::cerr << "Failed to transform a plan point to " << dst_srs_input
-                << "." << std::endl;
+      std::cerr << "Failed to transform a plan point to AEQD." << std::endl;
       continue;
     }
     point.setX(x);
@@ -695,7 +733,7 @@ desc.add_options()
       double dur = final_line.get_Length();
       // convert to wgs84
       OGRCoordinateTransformation *inv_transform =
-          OGRCreateCoordinateTransformation(&dstSRS, &srcSRS);
+          OGRCreateCoordinateTransformation(&dstSRS, &planSrcSRS);
       final_line.transform(inv_transform);
       char *wkt = nullptr;
       final_line.exportToWkt(&wkt);
@@ -746,7 +784,7 @@ desc.add_options()
       std::cerr << "Iteration number: " << iternum << std::endl;
       if(iternum >= 50){ // need to not allow doubling back
         OGRCoordinateTransformation *inv_transform =
-            OGRCreateCoordinateTransformation(&dstSRS, &srcSRS);
+            OGRCreateCoordinateTransformation(&dstSRS, &planSrcSRS);
         final_line.transform(inv_transform);
         char *wkt = nullptr;
         final_line.exportToWkt(&wkt);
@@ -765,7 +803,7 @@ desc.add_options()
       }
       // convert to wgs84
       OGRCoordinateTransformation *inv_transform =
-          OGRCreateCoordinateTransformation(&dstSRS, &srcSRS);
+          OGRCreateCoordinateTransformation(&dstSRS, &planSrcSRS);
       final_line.transform(inv_transform);
       char *wkt = nullptr;
       final_line.exportToWkt(&wkt);
