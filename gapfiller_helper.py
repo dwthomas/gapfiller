@@ -67,6 +67,7 @@ if __name__ == "__main__":
         geometry=[line],
         crs=wgs84,
     )
+    budget = float(args.budget) + line_gdf.to_crs(utils.metric_crs).length[0]
 
     budget = args.budget
 
@@ -75,9 +76,11 @@ if __name__ == "__main__":
     envelope = utils.line_to_ellipse(line_gdf, width=budget, resolution = 4)  # Example width of 100 km+
 
     m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction)
-    with tempfile.TemporaryDirectory(delete=True) as tmpdir:
+    with tempfile.TemporaryDirectory(delete=False) as tmpdir:
+        print(tmpdir)
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
         unmapped_output_path.write_text(m.unmapped_polygons.to_json())
+        # print(m.unmapped_polygons.to_json(), flush=True)
         land_output_path = Path(tmpdir) / "land_polygons.json"
         land_output_path.write_text(m.land_polygons.to_json())
         plan_output_path = Path(tmpdir) / "plan.json"
