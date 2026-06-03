@@ -77,7 +77,7 @@ if __name__ == "__main__":
 
     m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction)
     with tempfile.TemporaryDirectory(delete=False) as tmpdir:
-        print(tmpdir)
+        # print(tmpdir)
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
         unmapped_output_path.write_text(m.unmapped_polygons.to_json())
         # print(m.unmapped_polygons.to_json(), flush=True)
