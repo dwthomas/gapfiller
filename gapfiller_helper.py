@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 import argparse
 import sys
+import faulthandler
 from pathlib import Path
 import pandas as pd
 import geopandas as gpd
@@ -14,6 +15,9 @@ from beam import utils
 
 wgs84 = CRS.from_epsg(4326)
 
+# Enable faulthandler to print Python tracebacks on fatal errors (SIGSEGV, etc.)
+faulthandler.enable(file=sys.stderr, all_threads=True)
+
 def existing_dir(path_str: str) -> str:
     path = Path(path_str)
     if not path.is_dir():
@@ -26,6 +30,8 @@ if __name__ == "__main__":
     parser.add_argument("--source-lon", type=str, required=True, help="Source longitude (any GeoPandas-compatible format)")
     parser.add_argument("--dest-lat", type=str, required=True, help="Destination latitude (any GeoPandas-compatible format)")
     parser.add_argument("--dest-lon", type=str, required=True, help="Destination longitude (any GeoPandas-compatible format)")
+    parser.add_argument("--tmpdir", type=str, default="/tmp", help="Temporary directory for intermediate files. Default: /tmp")
+    parser.add_argument("--keep-temp", type=bool, default=False, help="Keep temporary files after execution. Default: False")
     parser.add_argument(
         "--budget",
         type=float,
@@ -55,7 +61,7 @@ if __name__ == "__main__":
 
     swath = args.swath
 
-    command = "{bin_path}/local_search --unmapped {unmapped} --land {land} --dst_srs ESRI:54009 --budget {budget} --plan {plan}"
+    command = "{bin_path}/local_search --unmapped {unmapped} --land {land} --budget {budget} --plan {plan}"
 
     line = LineString([(source_lon, source_lat), (dest_lon, dest_lat)])
 
@@ -63,17 +69,18 @@ if __name__ == "__main__":
         geometry=[line],
         crs=wgs84,
     )
-
-    budget = args.budget
+    budget = float(args.budget) + line_gdf.to_crs(utils.metric_crs).length[0]
 
     gebco_folder = args.gebco_dir
 
     envelope = utils.line_to_ellipse(line_gdf, width=budget, resolution = 4)  # Example width of 100 km+
 
     m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction)
-    with tempfile.TemporaryDirectory(delete=True) as tmpdir:
+    with tempfile.TemporaryDirectory(delete=not args.keep_temp, dir=args.tmpdir) as tmpdir:
+        # print(tmpdir)
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
         unmapped_output_path.write_text(m.unmapped_polygons.to_json())
+        # print(m.unmapped_polygons.to_json(), flush=True)
         land_output_path = Path(tmpdir) / "land_polygons.json"
         land_output_path.write_text(m.land_polygons.to_json())
         plan_output_path = Path(tmpdir) / "plan.json"
@@ -85,6 +92,7 @@ if __name__ == "__main__":
                 budget=budget,
                 plan=plan_output_path,
             )
+        # print(cmd)
         result = subprocess.run(
             cmd,
             shell=True,
@@ -96,7 +104,9 @@ if __name__ == "__main__":
             crs=wgs84,
         )
         if swath:
-            swath_gdf = m.survey_line_3D(output_gdf)
+            swath_gdf = m.survey_line(output_gdf)
             output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf[0]], ignore_index=True), crs = output_gdf.crs)
-
-        print(output_gdf.to_json(), flush=True)  
+        output_gdf = output_gdf.to_crs(utils.metric_crs)
+        output_gdf['geometry'] = output_gdf.geometry.simplify(2000, preserve_topology=True)
+        output_gdf = output_gdf.to_crs(utils.wgs84)
+        print(output_gdf.to_json(), flush=True)    
