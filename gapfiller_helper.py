@@ -31,7 +31,7 @@ if __name__ == "__main__":
     parser.add_argument("--dest-lat", type=str, required=True, help="Destination latitude (any GeoPandas-compatible format)")
     parser.add_argument("--dest-lon", type=str, required=True, help="Destination longitude (any GeoPandas-compatible format)")
     parser.add_argument("--tmpdir", type=str, default="/tmp", help="Temporary directory for intermediate files. Default: /tmp")
-    parser.add_argument("--keep-temp", type=bool, default=False, help="Keep temporary files after execution. Default: False")
+    parser.add_argument("--keep-tmp", action="store_true", help="Keep temporary files after execution. Default: False")
     parser.add_argument(
         "--budget",
         type=float,
@@ -73,10 +73,10 @@ if __name__ == "__main__":
 
     gebco_folder = args.gebco_dir
 
-    envelope = utils.line_to_ellipse(line_gdf, width=budget, resolution = 4)  # Example width of 100 km+
+    envelope = utils.line_to_ellipse(line_gdf, width=float(args.budget), resolution = 4)  # Example width of 100 km+
 
     m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction)
-    with tempfile.TemporaryDirectory(delete=not args.keep_temp, dir=args.tmpdir) as tmpdir:
+    with tempfile.TemporaryDirectory(delete=not args.keep_tmp, dir=args.tmpdir) as tmpdir:
         # print(tmpdir)
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
         unmapped_output_path.write_text(m.unmapped_polygons.to_json())
