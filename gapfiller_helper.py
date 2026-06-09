@@ -30,6 +30,8 @@ if __name__ == "__main__":
     parser.add_argument("--source-lon", type=str, required=True, help="Source longitude (any GeoPandas-compatible format)")
     parser.add_argument("--dest-lat", type=str, required=True, help="Destination latitude (any GeoPandas-compatible format)")
     parser.add_argument("--dest-lon", type=str, required=True, help="Destination longitude (any GeoPandas-compatible format)")
+    parser.add_argument("--tmpdir", type=str, default="/tmp", help="Temporary directory for intermediate files. Default: /tmp")
+    parser.add_argument("--keep-temp", type=bool, default=False, help="Keep temporary files after execution. Default: False")
     parser.add_argument(
         "--budget",
         type=float,
@@ -69,14 +71,12 @@ if __name__ == "__main__":
     )
     budget = float(args.budget) + line_gdf.to_crs(utils.metric_crs).length[0]
 
-    budget = args.budget
-
     gebco_folder = args.gebco_dir
 
     envelope = utils.line_to_ellipse(line_gdf, width=budget, resolution = 4)  # Example width of 100 km+
 
     m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction)
-    with tempfile.TemporaryDirectory(delete=False) as tmpdir:
+    with tempfile.TemporaryDirectory(delete=not args.keep_temp, dir=args.tmpdir) as tmpdir:
         # print(tmpdir)
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
         unmapped_output_path.write_text(m.unmapped_polygons.to_json())
