@@ -69,6 +69,8 @@ if __name__ == "__main__":
         geometry=[line],
         crs=wgs84,
     )
+    # print("initial length:", line_gdf.to_crs(utils.metric_crs).length[0])
+    # print("budget:", args.budget, "total:", float(args.budget) + line_gdf.to_crs(utils.metric_crs).length[0])
     budget = float(args.budget) + line_gdf.to_crs(utils.metric_crs).length[0]
 
     gebco_folder = args.gebco_dir
@@ -93,16 +95,22 @@ if __name__ == "__main__":
                 plan=plan_output_path,
             )
         # print(cmd)
+        # Run the command, piping only stderr (capture stderr, let stdout go to the console)
         result = subprocess.run(
             cmd,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
+        # Prefer stderr if the external tool writes WKT there, otherwise use stdout.
+        output_wkt = result.stdout.strip()
+        # print("C++ stderr:", result.stderr.strip(), flush=True)
         output_gdf = gpd.GeoDataFrame(
-            geometry=gpd.GeoSeries.from_wkt([result.stdout.strip()]),
+            geometry=gpd.GeoSeries.from_wkt([output_wkt]),
             crs=wgs84,
         )
+        # print("output length:", output_gdf.to_crs(utils.metric_crs).length[0])
         if swath:
             swath_gdf = m.survey_line(output_gdf)
             output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf[0]], ignore_index=True), crs = output_gdf.crs)

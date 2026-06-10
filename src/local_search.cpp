@@ -472,18 +472,19 @@ desc.add_options()
   
   // Create local azimuthal equidistant projection centered at plan centroid
   OGRSpatialReference dstSRS;
-  std::string aeqd_proj4 = "+proj=aeqd +lat_0=" + std::to_string(center_lat) + 
-                            " +lon_0=" + std::to_string(center_lon) + 
-                            " +datum=WGS84 +units=m";
+  dstSRS.importFromEPSG(3857);
+  // std::string aeqd_proj4 = "+proj=aeqd +lat_0=" + std::to_string(center_lat) + 
+  //                           " +lon_0=" + std::to_string(center_lon) + 
+  //                           " +datum=WGS84 +units=m";
   
-  if (dstSRS.SetFromUserInput(aeqd_proj4.c_str()) != OGRERR_NONE) {
-    std::cerr << "Failed to set local AEQD spatial reference: " << aeqd_proj4 << std::endl;
-    GDALClose(ds_unmapped);
-    GDALClose(ds_land);
-    return 1;
-  }
+  // if (dstSRS.SetFromUserInput(aeqd_proj4.c_str()) != OGRERR_NONE) {
+  //   std::cerr << "Failed to set local AEQD spatial reference: " << aeqd_proj4 << std::endl;
+  //   GDALClose(ds_unmapped);
+  //   GDALClose(ds_land);
+  //   return 1;
+  // }
   
-  std::cerr << "Using local AEQD projection: " << aeqd_proj4 << std::endl;
+  // std::cerr << "Using local AEQD projection: " << aeqd_proj4 << std::endl;
 
   // Create a coordinate transformation
   OGRCoordinateTransformation *transform =
@@ -556,7 +557,7 @@ desc.add_options()
     }
 
     double remainder = budget - line.get_Length();
-
+    std::cerr << "C++ line length: " << line.get_Length() << " budget: " << budget << " remainder: " << remainder << std::endl;
     int non_intersecting = 5;
 
     for (auto polygon : unmapped_polygons) {
