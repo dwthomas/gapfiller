@@ -111,10 +111,20 @@ if __name__ == "__main__":
             crs=wgs84,
         )
         # print("output length:", output_gdf.to_crs(utils.metric_crs).length[0])
-        if swath:
-            swath_gdf = m.survey_line(output_gdf)
-            output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf[0]], ignore_index=True), crs = output_gdf.crs)
         output_gdf = output_gdf.to_crs(utils.metric_crs)
-        output_gdf['geometry'] = output_gdf.geometry.simplify(2000, preserve_topology=True)
+        output_gdf['geometry'] = output_gdf['geometry'].simplify(2000, preserve_topology=True)
+
+        if swath:
+            swath_gdf, _, _ = m.survey_line(output_gdf.to_crs(utils.wgs84))
+            swath_gdf = swath_gdf.to_crs(utils.metric_crs)
+                        # print(output_gdf.area[1]/output_gdf.length[0])
+            buf = 1000
+            swath_gdf['geometry'] = swath_gdf['geometry'].buffer(buf)
+            swath_gdf['geometry'] = swath_gdf['geometry'].simplify(buf, preserve_topology=True)
+            swath_gdf['geometry'] = swath_gdf['geometry'].union_all()
+            swath_gdf['geometry'] = swath_gdf['geometry'].buffer(-buf)
+            print(output_gdf.crs, swath_gdf.crs)
+            output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf], ignore_index=True), crs = utils.metric_crs)
+
         output_gdf = output_gdf.to_crs(utils.wgs84)
         print(output_gdf.to_json(), flush=True)    
