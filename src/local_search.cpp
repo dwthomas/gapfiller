@@ -485,7 +485,7 @@ desc.add_options()
   // }
   
   // std::cerr << "Using local AEQD projection: " << aeqd_proj4 << std::endl;
-  std::string merc_proj4 = "+proj=webmerc +lon_0=" + std::to_string(center_lon) +
+  std::string merc_proj4 = "+proj=merc +a=6378137 +b=6378137 +lon_0=" + std::to_string(center_lon) +
                           " +datum=WGS84 +units=m";
   if (dstSRS.SetFromUserInput(merc_proj4.c_str()) != OGRERR_NONE) {
     std::cerr << "Failed to set Mercator spatial reference: " << merc_proj4 << std::endl;

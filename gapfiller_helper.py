@@ -28,8 +28,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Helper for gapfiller")
     parser.add_argument("--source-lat", type=str, required=True, help="Source latitude (any GeoPandas-compatible format)")
     parser.add_argument("--source-lon", type=str, required=True, help="Source longitude (any GeoPandas-compatible format)")
-    parser.add_argument("--dest-lat", type=str, required=True, help="Destination latitude (any GeoPandas-compatible format)")
-    parser.add_argument("--dest-lon", type=str, required=True, help="Destination longitude (any GeoPandas-compatible format)")
+    parser.add_argument("--dest-lat", "--end-lat", type=str, required=True, help="Destination latitude (any GeoPandas-compatible format)")
+    parser.add_argument("--dest-lon", "--end-lon", type=str, required=True, help="Destination longitude (any GeoPandas-compatible format)")
     parser.add_argument("--tmpdir", type=str, default="/tmp", help="Temporary directory for intermediate files. Default: /tmp")
     parser.add_argument("--keep-tmp", action="store_true", help="Keep temporary files after execution. Default: False")
     parser.add_argument(
@@ -69,9 +69,11 @@ if __name__ == "__main__":
         geometry=[line],
         crs=wgs84,
     )
-    # print("initial length:", line_gdf.to_crs(utils.metric_crs).length[0])
-    # print("budget:", args.budget, "total:", float(args.budget) + line_gdf.to_crs(utils.metric_crs).length[0])
-    budget = float(args.budget) + line_gdf.to_crs(utils.metric_crs).length[0]
+    centroid = line_gdf.geometry.iloc[0].centroid
+    metric_crs = utils.metric_crs(centroid.x)
+    # print("initial length:", line_gdf.to_crs( metric_crs).length[0])
+    # print("budget:", args.budget, "total:", float(args.budget) + line_gdf.to_crs( metric_crs).length[0])
+    budget = float(args.budget) + line_gdf.to_crs( metric_crs).length[0]
 
     gebco_folder = args.gebco_dir
 
@@ -110,13 +112,13 @@ if __name__ == "__main__":
             geometry=gpd.GeoSeries.from_wkt([output_wkt]),
             crs=wgs84,
         )
-        # print("output length:", output_gdf.to_crs(utils.metric_crs).length[0])
-        output_gdf = output_gdf.to_crs(utils.metric_crs)
+        # print("output length:", output_gdf.to_crs( metric_crs).length[0])
+        output_gdf = output_gdf.to_crs(metric_crs)
         output_gdf['geometry'] = output_gdf['geometry'].simplify(2000, preserve_topology=True)
 
         if swath:
             swath_gdf, _, _ = m.survey_line(output_gdf.to_crs(utils.wgs84))
-            swath_gdf = swath_gdf.to_crs(utils.metric_crs)
+            swath_gdf = swath_gdf.to_crs( metric_crs)
                         # print(output_gdf.area[1]/output_gdf.length[0])
             buf = 1000
             swath_gdf['geometry'] = swath_gdf['geometry'].buffer(buf)
@@ -124,7 +126,7 @@ if __name__ == "__main__":
             swath_gdf['geometry'] = swath_gdf['geometry'].union_all()
             swath_gdf['geometry'] = swath_gdf['geometry'].buffer(-buf)
             # print(output_gdf.crs, swath_gdf.crs)
-            output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf], ignore_index=True), crs = utils.metric_crs)
+            output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf], ignore_index=True), crs =  metric_crs)
 
         output_gdf = output_gdf.to_crs(utils.wgs84)
         print(output_gdf.to_json(), flush=True)    
