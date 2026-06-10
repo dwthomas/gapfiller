@@ -472,7 +472,7 @@ desc.add_options()
   
   // Create local azimuthal equidistant projection centered at plan centroid
   OGRSpatialReference dstSRS;
-  dstSRS.importFromEPSG(3857);
+  // dstSRS = pyproj.CRS.from_proj4("+proj=merc +lon_0=-157.5 +datum=WGS84 +units=m")
   // std::string aeqd_proj4 = "+proj=aeqd +lat_0=" + std::to_string(center_lat) + 
   //                           " +lon_0=" + std::to_string(center_lon) + 
   //                           " +datum=WGS84 +units=m";
@@ -485,6 +485,15 @@ desc.add_options()
   // }
   
   // std::cerr << "Using local AEQD projection: " << aeqd_proj4 << std::endl;
+  std::string merc_proj4 = "+proj=webmerc +lon_0=" + std::to_string(center_lon) +
+                          " +datum=WGS84 +units=m";
+  if (dstSRS.SetFromUserInput(merc_proj4.c_str()) != OGRERR_NONE) {
+    std::cerr << "Failed to set Mercator spatial reference: " << merc_proj4 << std::endl;
+    GDALClose(ds_unmapped);
+    GDALClose(ds_land);
+    return 1;
+  }
+  std::cerr << "Using Mercator projection: " << merc_proj4 << std::endl;
 
   // Create a coordinate transformation
   OGRCoordinateTransformation *transform =
