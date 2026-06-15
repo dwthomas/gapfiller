@@ -1,5 +1,7 @@
 #! /usr/bin/env python
 import argparse
+import json
+import antimeridian
 import sys
 import faulthandler
 from pathlib import Path
@@ -12,8 +14,6 @@ import tempfile
 import subprocess
 
 from beam import utils
-
-wgs84 = CRS.from_epsg(4326)
 
 # Enable faulthandler to print Python tracebacks on fatal errors (SIGSEGV, etc.)
 faulthandler.enable(file=sys.stderr, all_threads=True)
@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
     line_gdf = gpd.GeoDataFrame(
         geometry=[line],
-        crs=wgs84,
+        crs=utils.wgs84,
     )
     centroid = line_gdf.geometry.iloc[0].centroid
     metric_crs = utils.metric_crs(centroid.x)
@@ -78,7 +78,7 @@ if __name__ == "__main__":
     gebco_folder = args.gebco_dir
 
     envelope = utils.line_to_ellipse(line_gdf, width=float(args.budget), resolution = 4)  # Example width of 100 km+
-
+    print("envelope", envelope.to_crs(utils.wgs84).to_json())
     m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction)
     with tempfile.TemporaryDirectory(delete=not args.keep_tmp, dir=args.tmpdir) as tmpdir:
         # print(tmpdir)
@@ -110,14 +110,17 @@ if __name__ == "__main__":
         # print("C++ stderr:", result.stderr.strip(), flush=True)
         output_gdf = gpd.GeoDataFrame(
             geometry=gpd.GeoSeries.from_wkt([output_wkt]),
-            crs=wgs84,
+            crs=utils.wgs84,
         )
         # print("output length:", output_gdf.to_crs( metric_crs).length[0])
         output_gdf = output_gdf.to_crs(metric_crs)
         output_gdf['geometry'] = output_gdf['geometry'].simplify(2000, preserve_topology=True)
-
+        output_gdf = output_gdf.to_crs(utils.wgs84)
+        geojson_dict = json.loads(output_gdf.to_json())
+        fixed = antimeridian.fix_geojson(geojson_dict)
+        output_gdf = gpd.GeoDataFrame.from_features(fixed["features"], crs=utils.wgs84)
         if swath:
-            swath_gdf, _, _ = m.survey_line(output_gdf.to_crs(utils.wgs84))
+            swath_gdf = m.simple_survey_line(output_gdf.to_crs(metric_crs))
             swath_gdf = swath_gdf.to_crs( metric_crs)
                         # print(output_gdf.area[1]/output_gdf.length[0])
             buf = 1000
@@ -126,7 +129,10 @@ if __name__ == "__main__":
             swath_gdf['geometry'] = swath_gdf['geometry'].union_all()
             swath_gdf['geometry'] = swath_gdf['geometry'].buffer(-buf)
             # print(output_gdf.crs, swath_gdf.crs)
-            output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf], ignore_index=True), crs =  metric_crs)
+            output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf.to_crs(utils.wgs84)], ignore_index=True), crs =  utils.wgs84)
 
-        output_gdf = output_gdf.to_crs(utils.wgs84)
-        print(output_gdf.to_json(), flush=True)    
+        geojson_dict = json.loads(output_gdf.to_json())
+        fixed = antimeridian.fix_geojson(geojson_dict)
+        output_gdf = gpd.GeoDataFrame.from_features(fixed["features"], crs=utils.wgs84)
+        # fixed = geojson_dict
+        print(output_gdf.to_json())   
