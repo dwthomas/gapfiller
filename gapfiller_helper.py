@@ -74,11 +74,14 @@ if __name__ == "__main__":
     # print("initial length:", line_gdf.to_crs( metric_crs).length[0])
     # print("budget:", args.budget, "total:", float(args.budget) + line_gdf.to_crs( metric_crs).length[0])
     budget = float(args.budget) + line_gdf.to_crs( metric_crs).length[0]
-
+    metadata = {
+        "initial_length_m": line_gdf.to_crs( metric_crs).length[0],
+        "budget_m": float(args.budget),
+    }
     gebco_folder = args.gebco_dir
-
+    print("Calculating ellipse...", file=sys.stderr)
     envelope = utils.line_to_ellipse(line_gdf, width=float(args.budget), resolution = 4)  # Example width of 100 km+
-    print("envelope", envelope.to_crs(utils.wgs84).to_json())
+    # print("envelope", envelope.to_crs(utils.wgs84).to_json())
     m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction)
     with tempfile.TemporaryDirectory(delete=not args.keep_tmp, dir=args.tmpdir) as tmpdir:
         # print(tmpdir)
@@ -98,6 +101,7 @@ if __name__ == "__main__":
             )
         # print(cmd)
         # Run the command, piping only stderr (capture stderr, let stdout go to the console)
+        print("Searching for plans...", file=sys.stderr)
         result = subprocess.run(
             cmd,
             shell=True,
@@ -105,6 +109,7 @@ if __name__ == "__main__":
             stderr=subprocess.PIPE,
             text=True,
         )
+        print("Processing Plan...", file=sys.stderr)
         # Prefer stderr if the external tool writes WKT there, otherwise use stdout.
         output_wkt = result.stdout.strip()
         # print("C++ stderr:", result.stderr.strip(), flush=True)
@@ -119,6 +124,8 @@ if __name__ == "__main__":
         geojson_dict = json.loads(output_gdf.to_json())
         fixed = antimeridian.fix_geojson(geojson_dict)
         output_gdf = gpd.GeoDataFrame.from_features(fixed["features"], crs=utils.wgs84)
+        metadata["final_length_m"] = output_gdf.to_crs(metric_crs).length[0]
+        metadata["remaining budget_m"] = metadata["initial_length_m"] + metadata["budget_m"] - metadata["final_length_m"]
         if swath:
             swath_gdf = m.simple_survey_line(output_gdf.to_crs(metric_crs))
             swath_gdf = swath_gdf.to_crs( metric_crs)
@@ -131,8 +138,15 @@ if __name__ == "__main__":
             # print(output_gdf.crs, swath_gdf.crs)
             output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf.to_crs(utils.wgs84)], ignore_index=True), crs =  utils.wgs84)
 
+            initial_area = m.unmapped_polygons.to_crs(metric_crs).area.sum()
+            new_unmapped = m.unmapped_polygons.to_crs(metric_crs).overlay(swath_gdf.to_crs(metric_crs), how='difference')
+            metadata["newly_unmapped_area_m2"] = initial_area - new_unmapped.area.sum()
+
         geojson_dict = json.loads(output_gdf.to_json())
         fixed = antimeridian.fix_geojson(geojson_dict)
         output_gdf = gpd.GeoDataFrame.from_features(fixed["features"], crs=utils.wgs84)
+       
         # fixed = geojson_dict
-        print(output_gdf.to_json())   
+        geojson_dict = json.loads(output_gdf.to_json())
+        geojson_dict["properties"] = metadata
+        print(json.dumps(geojson_dict))
