@@ -52,6 +52,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--swath", action="store_true", help="Emit swath in addition to centerline.", default=False)
     parser.add_argument("--bin-path", type=str, default="src/release", help="Location of local_search")
+    parser.add_argument("--unmapped_file", type=str, help="Path to output unmapped raster file")
     args = parser.parse_args()
 
     source_lat = float(args.source_lat)
@@ -82,7 +83,7 @@ if __name__ == "__main__":
     print("Calculating ellipse...", file=sys.stderr)
     envelope = utils.line_to_ellipse(line_gdf, width=float(args.budget), resolution = 4)  # Example width of 100 km+
     # print("envelope", envelope.to_crs(utils.wgs84).to_json())
-    m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction)
+    m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction, unmapped_raster_path=args.unmapped_file)
     with tempfile.TemporaryDirectory(delete=not args.keep_tmp, dir=args.tmpdir) as tmpdir:
         # print(tmpdir)
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
