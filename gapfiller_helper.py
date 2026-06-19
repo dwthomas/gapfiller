@@ -135,11 +135,12 @@ if __name__ == "__main__":
             swath_gdf = m.simple_survey_line(output_gdf.to_crs(metric_crs))
             swath_gdf = swath_gdf.to_crs( metric_crs)
                         # print(output_gdf.area[1]/output_gdf.length[0])
-            buf = 1000
-            swath_gdf['geometry'] = swath_gdf['geometry'].buffer(buf)
+            buf = 2500
+            swath_gdf['geometry'] = swath_gdf['geometry'].buffer(buf, cap_style = 'round', join_style = 'round')
             swath_gdf['geometry'] = swath_gdf['geometry'].simplify(buf, preserve_topology=True)
             swath_gdf['geometry'] = swath_gdf['geometry'].union_all()
-            swath_gdf['geometry'] = swath_gdf['geometry'].buffer(-buf)
+            swath_gdf['geometry'] = swath_gdf['geometry'].buffer(-buf, cap_style = 'round', join_style = 'round')
+            swath_gdf['geometry'] = swath_gdf['geometry'].simplify(.5*buf, preserve_topology=True)
             # print(output_gdf.crs, swath_gdf.crs)
             output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf.to_crs(utils.wgs84)], ignore_index=True), crs =  utils.wgs84)
 
@@ -148,7 +149,7 @@ if __name__ == "__main__":
             metadata["newly_unmapped_area_m2"] = initial_area - new_unmapped.area.sum()
 
         geojson_dict = json.loads(output_gdf.to_json())
-        fixed = antimeridian.fix_geojson(geojson_dict)
+        fixed = antimeridian.fix_geojson(geojson_dict, fix_winding=True)
         output_gdf = gpd.GeoDataFrame.from_features(fixed["features"], crs=utils.wgs84)
        
         # fixed = geojson_dict

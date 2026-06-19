@@ -12,8 +12,10 @@
 #include <vector>
 #include <unordered_map>
 #include <functional>
-#include <nlohmann/json.hpp>
+
 #include <fstream>
+
+#include "json.hpp"
 
 namespace po = boost::program_options;
 
