@@ -87,7 +87,10 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory(delete=not args.keep_tmp, dir=args.tmpdir) as tmpdir:
         # print(tmpdir)
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
-        unmapped_output_path.write_text(m.unmapped_polygons.to_json())
+        unmapped_json = json.loads(m.unmapped_polygons.to_json())
+        unmapped_json["properties"] = {"unmapped_scores": m.unmapped_scores.values.tolist()}
+
+        unmapped_output_path.write_text(json.dumps(unmapped_json))
         # print(m.unmapped_polygons.to_json(), flush=True)
         land_output_path = Path(tmpdir) / "land_polygons.json"
         land_output_path.write_text(m.land_polygons.to_json())
@@ -114,6 +117,7 @@ if __name__ == "__main__":
         # Prefer stderr if the external tool writes WKT there, otherwise use stdout.
         output_wkt = result.stdout.strip()
         # print("C++ stderr:", result.stderr.strip(), flush=True)
+        # print("Output WKT:", output_wkt, flush=True)
         output_gdf = gpd.GeoDataFrame(
             geometry=gpd.GeoSeries.from_wkt([output_wkt]),
             crs=utils.wgs84,
