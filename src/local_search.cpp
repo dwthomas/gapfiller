@@ -7,15 +7,13 @@
 #include <boost/program_options.hpp>
 #include <cmath>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <unordered_map>
-#include <functional>
 
-#include <fstream>
+#include "dataset_load.hpp"
 
-#include "json.hpp"
+
 
 namespace po = boost::program_options;
 
@@ -153,6 +151,21 @@ std::pair<OGRPolygon, int> add_to_polygon(const OGRPolygon &polygon,
 //     return length;
 // }
 
+double true_length(OGRLineString * line){
+    double length = 0.0;
+    if (line->getNumPoints() < 2) {
+        return length;
+    }
+    std::cerr << "line first point: (" << line->getX(0) << ", " << line->getY(0) << ")" << std::endl;
+    for (int i = 0; i < line->getNumPoints() - 1; ++i) {
+        OGRPoint p1, p2;
+        line->getPoint(i, &p1);
+        line->getPoint(i + 1, &p2);
+        length += p1.Distance(&p2);
+    }
+    return length;
+}
+
 double score(const std::vector<OGRPoint>& path, const std::vector<OGRPolygon *> &unmapped_polygons, const std::vector<double> &unmapped_polygon_beam_widths) {
     OGRLineString line;
     double sc = 0.0;
@@ -169,7 +182,7 @@ double score(const std::vector<OGRPoint>& path, const std::vector<OGRPolygon *> 
           if (intersection != nullptr && wkbFlatten(intersection->getGeometryType()) == wkbLineString) {
             IntersectionInfo info;
             info.intersection = (OGRLineString *)intersection->clone();
-            sc += info.intersection->get_Length() * pwidth;
+            sc += true_length(info.intersection) * pwidth;
           }
           OGRGeometryFactory::destroyGeometry(intersection);
         }
@@ -345,6 +358,8 @@ local_improvement(const IntersectionInfo &info) {
   return {0.0, nullptr};
 }
 
+
+
 int main(int argc, char *argv[]) {
   std::string unmapped_file, land_file;
 
@@ -372,111 +387,13 @@ desc.add_options()
     std::cout << desc << "\n";
     return 1;
   }
+  double budget = vm["budget"].as<double>();
 
   GDALAllRegister();
 
-  GDALDataset *ds_unmapped = (GDALDataset *)GDALOpenEx(
-      unmapped_file.c_str(), GDAL_OF_VECTOR, nullptr, nullptr, nullptr);
-  GDALDataset *ds_land = (GDALDataset *)GDALOpenEx(
-      land_file.c_str(), GDAL_OF_VECTOR, nullptr, nullptr, nullptr);
-
-  if (!ds_unmapped) {
-    std::cerr << "Failed to open unmapped file: " << unmapped_file << std::endl;
-    return 1;
-  }
-  if (!ds_land) {
-    std::cerr << "Failed to open land file: " << land_file << std::endl;
-    GDALClose(ds_unmapped);
-    return 1;
-  }
-  std::vector<OGRPolygon *> unmapped_polygons;
-  std::vector<double> unmapped_polygon_beam_widths;
-  std::vector<OGRPolygon *> land_polygons;
-
-  double budget = vm["budget"].as<double>();
-
-  // Extract polygons from unmapped dataset
-  for (int i = 0; i < ds_unmapped->GetLayerCount(); ++i) {
-    OGRLayer *layer = ds_unmapped->GetLayer(i);
-    layer->ResetReading();
-    OGRFeature *feature = nullptr;
-
-    while ((feature = layer->GetNextFeature()) != nullptr) {
-      OGRGeometry *geom = feature->GetGeometryRef();
-      if (geom != nullptr &&
-          wkbFlatten(geom->getGeometryType()) == wkbPolygon) {
-        unmapped_polygons.push_back((OGRPolygon *)geom->clone());
-      }
-      OGRFeature::DestroyFeature(feature);
-    }
-  }
+  auto [unmapped_polygons, unmapped_polygon_beam_widths, ds_unmapped] = load_unmapped(unmapped_file);
+  auto [land_polygons, ds_land] = load_land(land_file);
   
-  // Read unmapped_polygon_beam_widths from JSON properties
-  std::ifstream unmapped_json_file(unmapped_file);
-  if (unmapped_json_file.is_open()) {
-    try {
-      nlohmann::json j = nlohmann::json::parse(unmapped_json_file);
-      
-      // std::cerr << "[DEBUG] Top-level JSON keys:\n";
-      // for (auto& [key, value] : j.items()) {
-      //   std::cerr << "  - " << key << "\n";
-      // }
-
-      if (j.contains("features") && j["features"].is_array() && j["features"].size() > 0) {
-        // std::cerr << "[DEBUG] First feature keys:\n";
-        for (auto& [key, value] : j["features"][0].items()) {
-          // std::cerr << "  - " << key << "\n";
-        }
-        if (j["features"][0].contains("properties") && j["features"][0]["properties"].is_object()) {
-          // std::cerr << "[DEBUG] First feature properties keys:\n";
-          for (auto& [key, value] : j["features"][0]["properties"].items()) {
-            // std::cerr << "  - " << key << "\n";
-          }
-        }
-      }
-
-      if (j.contains("properties") && j["properties"].is_object()) {
-        auto& props = j["properties"];
-        if (props.contains("unmapped_scores")) {
-          
-          if (props["unmapped_scores"].is_object()) {
-            for (auto& [key, value] : props["unmapped_scores"].items()) {
-              unmapped_polygon_beam_widths.push_back(value.get<double>());
-            }
-          } else if (props["unmapped_scores"].is_array()) {
-            for (auto& value : props["unmapped_scores"]) {
-              unmapped_polygon_beam_widths.push_back(value.get<double>());
-            }
-          } else {
-            std::cerr << "[DEBUG] unmapped_scores is neither an object nor an array!\n";
-          }
-        }
-      }
-    } catch (const std::exception& e) {
-      std::cerr << "Error reading unmapped_scores from JSON: " << e.what() << std::endl;
-    }
-    unmapped_json_file.close();
-  }
-  std::cerr << "Unmapped polygon beam widths: ";
-  for (auto bw: unmapped_polygon_beam_widths) {
-     std::cerr << bw << " ";
-  }
-  std::cerr << std::endl;
-
-  // Extract polygons from land dataset
-  for (int i = 0; i < ds_land->GetLayerCount(); ++i) {
-    OGRLayer *layer = ds_land->GetLayer(i);
-    layer->ResetReading();
-    OGRFeature *feature = nullptr;
-    while ((feature = layer->GetNextFeature()) != nullptr) {
-      OGRGeometry *geom = feature->GetGeometryRef();
-      if (geom != nullptr &&
-          wkbFlatten(geom->getGeometryType()) == wkbPolygon) {
-        land_polygons.push_back((OGRPolygon *)geom->clone());
-      }
-      OGRFeature::DestroyFeature(feature);
-    }
-  }
   std::vector<OGRPoint> initial_plan;
   GDALDataset *ds_plan =
       (GDALDataset *)GDALOpenEx(vm["plan"].as<std::string>().c_str(),

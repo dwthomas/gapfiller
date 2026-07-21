@@ -34,7 +34,7 @@ pkg_check_modules(GDAL REQUIRED gdal)
 # target_link_libraries(preprocess_maps PUBLIC ${GDAL_LIBRARIES})
 # TARGET_LINK_LIBRARIES(preprocess_maps PUBLIC ${Boost_LIBRARIES})
 
-add_executable(local_search local_search.cpp)
+add_executable(local_search local_search.cpp dataset_load.cpp)
 target_include_directories(local_search PUBLIC ${GDAL_INCLUDE_DIRS})
 target_link_directories(local_search PUBLIC ${GDAL_LIBRARY_DIRS})
 target_link_libraries(local_search PUBLIC ${GDAL_LIBRARIES})
