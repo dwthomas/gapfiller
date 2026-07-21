@@ -156,7 +156,7 @@ double true_length(OGRLineString * line){
     if (line->getNumPoints() < 2) {
         return length;
     }
-    std::cerr << "line first point: (" << line->getX(0) << ", " << line->getY(0) << ")" << std::endl;
+    // std::cerr << "line first point: (" << line->getX(0) << ", " << line->getY(0) << ")" << std::endl;
     for (int i = 0; i < line->getNumPoints() - 1; ++i) {
         OGRPoint p1, p2;
         line->getPoint(i, &p1);
@@ -358,6 +358,19 @@ local_improvement(const IntersectionInfo &info) {
   return {0.0, nullptr};
 }
 
+std::vector<OGRPoint> transform_line(const std::vector<OGRPoint>& line, OGRCoordinateTransformation *transform) {
+  std::vector<OGRPoint> transformed_line;
+  for (const auto& point : line) {
+    double x = point.getX();
+    double y = point.getY();
+    if (!transform->Transform(1, &x, &y)) {
+      std::cerr << "Failed to transform a plan point to AEQD." << std::endl;
+      continue;
+    }
+    transformed_line.emplace_back(x, y);
+  }
+  return transformed_line;
+}
 
 
 int main(int argc, char *argv[]) {
@@ -394,62 +407,8 @@ desc.add_options()
   auto [unmapped_polygons, unmapped_polygon_beam_widths, ds_unmapped] = load_unmapped(unmapped_file);
   auto [land_polygons, ds_land] = load_land(land_file);
   
-  std::vector<OGRPoint> initial_plan;
-  GDALDataset *ds_plan =
-      (GDALDataset *)GDALOpenEx(vm["plan"].as<std::string>().c_str(),
-                                GDAL_OF_VECTOR, nullptr, nullptr, nullptr);
+  auto [initial_plan, line, planSrcSRS] = load_plan(vm["plan"].as<std::string>());
 
-  if (!ds_plan) {
-    std::cerr << "Failed to open plan file: " << vm["plan"].as<std::string>()
-              << std::endl;
-    return 1;
-  }
-
-  OGRLayer *plan_layer = ds_plan->GetLayer(0);
-  if (!plan_layer) {
-    std::cerr << "Plan file does not contain any layers." << std::endl;
-    GDALClose(ds_plan);
-    return 1;
-  }
-
-  plan_layer->ResetReading();
-  OGRFeature *feature = plan_layer->GetNextFeature();
-  if (!feature) {
-    std::cerr << "Plan file does not contain any features." << std::endl;
-    GDALClose(ds_plan);
-    return 1;
-  }
-
-  OGRGeometry *geom = feature->GetGeometryRef();
-  if (!geom || wkbFlatten(geom->getGeometryType()) != wkbLineString) {
-    std::cerr << "Plan file does not contain a LineString feature."
-              << std::endl;
-    OGRFeature::DestroyFeature(feature);
-    GDALClose(ds_plan);
-    return 1;
-  }
-
-  OGRLineString *line = (OGRLineString *)geom;
-  for (int i = 0; i < line->getNumPoints(); ++i) {
-    OGRPoint point;
-    line->getPoint(i, &point);
-    initial_plan.push_back(point);
-  }
-
-  OGRSpatialReference planSrcSRS;
-  const OGRSpatialReference *planSpatialRef = plan_layer->GetSpatialRef();
-  if (planSpatialRef) {
-    planSrcSRS = *planSpatialRef;
-  } else {
-    // If the plan has no CRS metadata, assume WGS84 input coordinates.
-    planSrcSRS.SetFromUserInput("EPSG:4326");
-  }
-
-  // std::cout << "Plan points:" << std::endl;
-  // for (const auto &point : initial_plan) {
-  //   std::cout << "Point: (" << point.getX() << ", " << point.getY() << ")"
-  //             << std::endl;
-  // }
 
   // Define the source (WGS84) and target (Mollweide) spatial references
   OGRLayer *unmapped_layer = ds_unmapped->GetLayer(0);
@@ -500,20 +459,28 @@ desc.add_options()
   // Create a coordinate transformation
   OGRCoordinateTransformation *transform =
       OGRCreateCoordinateTransformation(&planSrcSRS, &dstSRS);
+  OGRCoordinateTransformation *inverse_transform =
+      OGRCreateCoordinateTransformation(&dstSRS, &planSrcSRS);
   if (!transform) {
     std::cerr << "Failed to create coordinate transformation to AEQD." << std::endl;
     return 1;
   }
 
   // Transform unmapped polygons
-  for (auto &polygon : unmapped_polygons) {
+  std::vector<OGRPolygon*> metric_unmapped_polygons;
+  metric_unmapped_polygons.reserve(unmapped_polygons.size());
+
+  for (auto* polygon : unmapped_polygons) {
+    metric_unmapped_polygons.push_back(static_cast<OGRPolygon*>(polygon->clone()));
+  }
+  for (auto &polygon : metric_unmapped_polygons) {
     if (polygon->transform(transform) != OGRERR_NONE) {
       std::cerr << "Failed to transform an unmapped polygon to AEQD." << std::endl;
     }
   }
 
   // order unmapped polygons by area descending
-  std::sort(unmapped_polygons.begin(), unmapped_polygons.end(),
+  std::sort(metric_unmapped_polygons.begin(), metric_unmapped_polygons.end(),
             [](OGRPolygon *a, OGRPolygon *b) {
               return a->get_Area() > b->get_Area();
             });
@@ -532,20 +499,20 @@ desc.add_options()
     return 1;
   }
 
-  // Transform plan points from plan CRS (WGS84 by default) to AEQD.
-  for (auto &point : initial_plan) {
-    double x = point.getX();
-    double y = point.getY();
-    if (!planTransform->Transform(1, &x, &y)) {
-      std::cerr << "Failed to transform a plan point to AEQD." << std::endl;
-      continue;
-    }
-    point.setX(x);
-    point.setY(y);
-  }
-  auto plan = initial_plan;
+  // // Transform plan points from plan CRS (WGS84 by default) to AEQD.
+  // for (auto &point : initial_plan) {
+  //   double x = point.getX();
+  //   double y = point.getY();
+  //   if (!planTransform->Transform(1, &x, &y)) {
+  //     std::cerr << "Failed to transform a plan point to AEQD." << std::endl;
+  //     continue;
+  //   }
+  //   point.setX(x);
+  //   point.setY(y);
+  // }
+  auto metric_plan = transform_line(initial_plan, planTransform);
 
-  auto initial_score = score(plan, unmapped_polygons, unmapped_polygon_beam_widths);
+  auto initial_score = score(metric_plan, metric_unmapped_polygons, unmapped_polygon_beam_widths);
   std::cerr << "Initial plan score: " << initial_score << std::endl;
   int iternum = 0;
 
@@ -559,7 +526,7 @@ desc.add_options()
     std::vector<IntersectionInfo> intersection_infos;
 
     OGRLineString line;
-    for (const auto& p : simplify(plan)) {
+    for (const auto& p : simplify(metric_plan)) {
       line.addPoint(&p);    
     }
 
@@ -571,14 +538,14 @@ desc.add_options()
     std::cerr << "C++ line length: " << line.get_Length() << " budget: " << budget << " remainder: " << remainder << std::endl;
     int non_intersecting = 5;
 
-    for (auto polygon : unmapped_polygons) {
+    for (auto polygon : metric_unmapped_polygons) {
       if (std::find(used_polys.begin(), used_polys.end(), *polygon) != used_polys.end()) {
         continue;
       }
-      for (size_t i = 0; i < plan.size() - 1; i++) {
+      for (size_t i = 0; i < metric_plan.size() - 1; i++) {
         OGRLineString segment;
-        segment.addPoint(&plan[i]);
-        segment.addPoint(&plan[i + 1]);
+        segment.addPoint(&metric_plan[i]);
+        segment.addPoint(&metric_plan[i + 1]);
 
         if (polygon->Intersects(&segment)) {
 
@@ -650,8 +617,8 @@ desc.add_options()
         intersection_infos[i].intersection->getPoint(
             intersection_infos[i].intersection->getNumPoints() - 1, &target);
 
-        OGRPoint *next_point = &plan[std::min(
-            (std::size_t)intersection_infos[i].index + 1, plan.size() - 1)];
+        OGRPoint *next_point = &metric_plan[std::min(
+            (std::size_t)intersection_infos[i].index + 1, metric_plan.size() - 1)];
         // std::cerr << "target point: (" << target.getX() << ", " << target.getY()
         //         << ")" << std::endl;
 
@@ -685,29 +652,29 @@ desc.add_options()
         std::vector<OGRPoint> new_plan1;
 
         for (std::size_t j = 0; j <= intersection_infos[i].index; j++) {
-            new_plan1.push_back(plan[j]);
+            new_plan1.push_back(metric_plan[j]);
         }
         for (int k = 0; k < alt_paths.first->getNumPoints(); k++) {
             OGRPoint point;
             alt_paths.first->getPoint(k, &point);
             new_plan1.push_back(point);
         }
-        for (std::size_t j = intersection_infos[i].index + 2; j < plan.size(); j++) {
-            new_plan1.push_back(plan[j]);
+        for (std::size_t j = intersection_infos[i].index + 2; j < metric_plan.size(); j++) {
+            new_plan1.push_back(metric_plan[j]);
         }
 
         std::vector<OGRPoint> new_plan2;
 
         for (std::size_t j = 0; j <= intersection_infos[i].index; j++) {
-            new_plan2.push_back(plan[j]);
+            new_plan2.push_back(metric_plan[j]);
         }
         for (int k = 0; k < alt_paths.second->getNumPoints(); k++) {
             OGRPoint point;
             alt_paths.second->getPoint(k, &point);
             new_plan2.push_back(point);
         }
-        for (std::size_t j = intersection_infos[i].index + 2; j < plan.size(); j++) {
-            new_plan2.push_back(plan[j]);
+        for (std::size_t j = intersection_infos[i].index + 2; j < metric_plan.size(); j++) {
+            new_plan2.push_back(metric_plan[j]);
         }
 
         // std::cout << "New Plan 1:" << std::endl;
@@ -739,7 +706,7 @@ desc.add_options()
       std::cerr << "No more intersections found. Exiting local improvement."
                 << std::endl;
       OGRLineString final_line;
-      for (const auto &p : simplify(plan)) {
+      for (const auto &p : simplify(metric_plan)) {
           final_line.addPoint(&p);    
       }
       double dur = final_line.get_Length();
@@ -762,7 +729,7 @@ desc.add_options()
     long best_i = -1;
     long i = 0;
     for (const auto& option : options) {
-      double s = score(option, unmapped_polygons, unmapped_polygon_beam_widths);
+      double s = score(option, metric_unmapped_polygons, unmapped_polygon_beam_widths);
         // std::cerr << "Score: " << s;
         // for (const auto &point : option) {
         //     std::cerr << " (" << point.getX() << ", " << point.getY() << ")\t";
@@ -774,8 +741,8 @@ desc.add_options()
         }
         ++i;
     }
-    if (best_score > score(plan, unmapped_polygons, unmapped_polygon_beam_widths)) {
-      plan = options[best_i];
+    if (best_score > score(metric_plan, metric_unmapped_polygons, unmapped_polygon_beam_widths)) {
+      metric_plan = options[best_i];
       if (used_polys_vector[best_i]) {
         char *wkt = nullptr;
         used_polys_vector[best_i]->exportToWkt(&wkt);
@@ -789,7 +756,7 @@ desc.add_options()
                  << std::endl;
        // print geojson of plan
       OGRLineString final_line;
-      for (const auto &p : plan) {
+      for (const auto &p : metric_plan) {
           final_line.addPoint(&p);    
       }
       // convert to wgs84
@@ -810,7 +777,7 @@ desc.add_options()
                 << std::endl;
       // print geojson of plan
       OGRLineString final_line;
-      for (const auto &p : plan) {
+      for (const auto &p : metric_plan) {
           final_line.addPoint(&p);    
       }
       // convert to wgs84
@@ -829,8 +796,7 @@ desc.add_options()
 
   OCTDestroyCoordinateTransformation(transform);
 
-  OGRFeature::DestroyFeature(feature);
-  GDALClose(ds_plan);
+ 
 
   GDALClose(ds_unmapped);
   GDALClose(ds_land);

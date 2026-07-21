@@ -1,7 +1,6 @@
-#pragma once
-
 #include <fstream>
 #include <iostream>
+#include <vector>
 
 #include "json.hpp"
 
@@ -116,4 +115,62 @@ std::tuple<std::vector<OGRPolygon *>, GDALDataset *> load_land(const std::string
     }
   }
   return std::make_tuple(land_polygons, ds_land);
+}
+
+std::tuple<std::vector<OGRPoint>, OGRLineString *, OGRSpatialReference> load_plan(const std::string& plan_file){
+    std::vector<OGRPoint> initial_plan;
+    GDALDataset *ds_plan =
+        (GDALDataset *)GDALOpenEx(plan_file.c_str(),
+                                    GDAL_OF_VECTOR, nullptr, nullptr, nullptr);
+
+    if (!ds_plan) {
+        std::cerr << "Failed to open plan file: " << plan_file
+                << std::endl;
+        exit(1);
+    }
+
+    OGRLayer *plan_layer = ds_plan->GetLayer(0);
+    if (!plan_layer) {
+        std::cerr << "Plan file does not contain any layers." << std::endl;
+        GDALClose(ds_plan);
+        exit(1);
+    }
+
+    plan_layer->ResetReading();
+    OGRFeature *feature = plan_layer->GetNextFeature();
+    if (!feature) {
+        std::cerr << "Plan file does not contain any features." << std::endl;
+        GDALClose(ds_plan);
+        exit(1);
+    }
+
+    OGRGeometry *geom = feature->GetGeometryRef();
+    if (!geom || wkbFlatten(geom->getGeometryType()) != wkbLineString) {
+        std::cerr << "Plan file does not contain a LineString feature."
+                << std::endl;
+        OGRFeature::DestroyFeature(feature);
+        GDALClose(ds_plan);
+        exit(1);
+    }
+
+    OGRLineString *line = (OGRLineString *)geom;
+    for (int i = 0; i < line->getNumPoints(); ++i) {
+        OGRPoint point;
+        line->getPoint(i, &point);
+        initial_plan.push_back(point);
+    }
+    
+
+    OGRSpatialReference planSrcSRS;
+    const OGRSpatialReference *planSpatialRef = plan_layer->GetSpatialRef();
+    if (planSpatialRef) {
+        planSrcSRS = *planSpatialRef;
+    } else {
+        // If the plan has no CRS metadata, assume WGS84 input coordinates.
+        planSrcSRS.SetFromUserInput("EPSG:4326");
+    }
+
+    OGRFeature::DestroyFeature(feature);
+    GDALClose(ds_plan);
+    return std::make_tuple(initial_plan, line, planSrcSRS);
 }
