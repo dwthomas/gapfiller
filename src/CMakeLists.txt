@@ -10,6 +10,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
 # find_package(Boost REQUIRED)
 FIND_PACKAGE(Boost COMPONENTS program_options REQUIRED)
 INCLUDE_DIRECTORIES(${Boost_INCLUDE_DIRS})
+find_package(GeographicLib REQUIRED)
 
 # add_subdirectory(trivis) 
 # add_subdirectory(trivis_plus) 
@@ -39,4 +40,4 @@ target_include_directories(local_search PUBLIC ${GDAL_INCLUDE_DIRS})
 target_link_directories(local_search PUBLIC ${GDAL_LIBRARY_DIRS})
 target_link_libraries(local_search PUBLIC ${GDAL_LIBRARIES})
 TARGET_LINK_LIBRARIES(local_search PUBLIC ${Boost_LIBRARIES})
-
+TARGET_LINK_LIBRARIES(local_search PUBLIC GeographicLib)

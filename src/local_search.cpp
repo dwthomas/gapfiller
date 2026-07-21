@@ -11,6 +11,8 @@
 #include <vector>
 #include <unordered_map>
 
+#include <GeographicLib/Geodesic.hpp>
+
 #include "dataset_load.hpp"
 
 
@@ -27,6 +29,7 @@ struct IntersectionInfo {
   std::size_t index;
 };
 
+const GeographicLib::Geodesic& geod = GeographicLib::Geodesic::WGS84();
 
 // Calculate centroid of points, handling date line wrapping
 std::pair<double, double> calculateCentroid(const std::vector<OGRPoint>& points) {
@@ -151,38 +154,71 @@ std::pair<OGRPolygon, int> add_to_polygon(const OGRPolygon &polygon,
 //     return length;
 // }
 
-double true_length(OGRLineString * line){
+std::vector<OGRPoint> transform_line(const std::vector<OGRPoint>& line, OGRCoordinateTransformation *transform) {
+  std::vector<OGRPoint> transformed_line;
+  for (const auto& point : line) {
+    double x = point.getX();
+    double y = point.getY();
+    if (!transform->Transform(1, &x, &y)) {
+      std::cerr << "Failed to transform a plan point to AEQD." << std::endl;
+      continue;
+    }
+    transformed_line.emplace_back(x, y);
+  }
+  return transformed_line;
+}
+
+double true_length(OGRLineString * line, OGRCoordinateTransformation * inverse_transform){
+    std::vector<OGRPoint> line_points;
+    for (int i = 0; i < line->getNumPoints(); i++) {
+        OGRPoint p1;
+        line->getPoint(i, &p1);
+        line_points.push_back(p1);
+    }
+
+    auto wgs84_line = transform_line(line_points, inverse_transform); 
+
     double length = 0.0;
     if (line->getNumPoints() < 2) {
         return length;
     }
     // std::cerr << "line first point: (" << line->getX(0) << ", " << line->getY(0) << ")" << std::endl;
-    for (int i = 0; i < line->getNumPoints() - 1; ++i) {
+    for (int i = 0; i < wgs84_line.size() - 1; ++i) {
         OGRPoint p1, p2;
-        line->getPoint(i, &p1);
-        line->getPoint(i + 1, &p2);
-        length += p1.Distance(&p2);
+        p1 = wgs84_line[i];
+        p2 = wgs84_line[i + 1];
+
+        double lat1 = p1.getY();
+        double lon1 = p1.getX();
+        double lat2 = p2.getY();
+        double lon2 = p2.getX();
+
+        double distance_m;
+        geod.Inverse(lat1, lon1, lat2, lon2, distance_m);
+        // std::cerr << "Distance between (" << lat1 << ", " << lon1 << ") and (" << lat2 << ", " << lon2 << ") is " << distance_m << " meters." << std::endl;
+        length += distance_m;
     }
     return length;
 }
 
-double score(const std::vector<OGRPoint>& path, const std::vector<OGRPolygon *> &unmapped_polygons, const std::vector<double> &unmapped_polygon_beam_widths) {
+double score(const std::vector<OGRPoint>& metric_path, const std::vector<OGRPolygon *> &metric_unmapped_polygons,
+                  const std::vector<double> &unmapped_polygon_beam_widths, OGRCoordinateTransformation *inverse_transform) {
     OGRLineString line;
     double sc = 0.0;
-    for (std::size_t pi = 0; pi < unmapped_polygons.size(); pi++) {
-      auto polygon = unmapped_polygons[pi];
+    for (std::size_t pi = 0; pi < metric_unmapped_polygons.size(); pi++) {
+      auto polygon = metric_unmapped_polygons[pi];
       auto pwidth = unmapped_polygon_beam_widths[pi];
-      for (size_t i = 0; i < path.size() - 1; i++) {
+      for (size_t i = 0; i < metric_path.size() - 1; i++) {
         OGRLineString segment;
-        segment.addPoint(&path[i]);
-        segment.addPoint(&path[i + 1]);
+        segment.addPoint(&metric_path[i]);
+        segment.addPoint(&metric_path[i + 1]);
 
         if (polygon->Intersects(&segment)) {
           OGRGeometry *intersection = polygon->Intersection(&segment);
           if (intersection != nullptr && wkbFlatten(intersection->getGeometryType()) == wkbLineString) {
             IntersectionInfo info;
             info.intersection = (OGRLineString *)intersection->clone();
-            sc += true_length(info.intersection) * pwidth;
+            sc += true_length(info.intersection, inverse_transform) * pwidth;
           }
           OGRGeometryFactory::destroyGeometry(intersection);
         }
@@ -358,19 +394,7 @@ local_improvement(const IntersectionInfo &info) {
   return {0.0, nullptr};
 }
 
-std::vector<OGRPoint> transform_line(const std::vector<OGRPoint>& line, OGRCoordinateTransformation *transform) {
-  std::vector<OGRPoint> transformed_line;
-  for (const auto& point : line) {
-    double x = point.getX();
-    double y = point.getY();
-    if (!transform->Transform(1, &x, &y)) {
-      std::cerr << "Failed to transform a plan point to AEQD." << std::endl;
-      continue;
-    }
-    transformed_line.emplace_back(x, y);
-  }
-  return transformed_line;
-}
+
 
 
 int main(int argc, char *argv[]) {
@@ -512,7 +536,7 @@ desc.add_options()
   // }
   auto metric_plan = transform_line(initial_plan, planTransform);
 
-  auto initial_score = score(metric_plan, metric_unmapped_polygons, unmapped_polygon_beam_widths);
+  auto initial_score = score(metric_plan, metric_unmapped_polygons, unmapped_polygon_beam_widths, inverse_transform);
   std::cerr << "Initial plan score: " << initial_score << std::endl;
   int iternum = 0;
 
@@ -729,7 +753,7 @@ desc.add_options()
     long best_i = -1;
     long i = 0;
     for (const auto& option : options) {
-      double s = score(option, metric_unmapped_polygons, unmapped_polygon_beam_widths);
+      double s = score(option, metric_unmapped_polygons, unmapped_polygon_beam_widths, inverse_transform);
         // std::cerr << "Score: " << s;
         // for (const auto &point : option) {
         //     std::cerr << " (" << point.getX() << ", " << point.getY() << ")\t";
@@ -741,7 +765,7 @@ desc.add_options()
         }
         ++i;
     }
-    if (best_score > score(metric_plan, metric_unmapped_polygons, unmapped_polygon_beam_widths)) {
+    if (best_score > score(metric_plan, metric_unmapped_polygons, unmapped_polygon_beam_widths, inverse_transform)) {
       metric_plan = options[best_i];
       if (used_polys_vector[best_i]) {
         char *wkt = nullptr;
