@@ -473,7 +473,6 @@ dependencies:
   - zstd=1.5.7=hb8e6e7a_2
   - pip:
       - pyinstrument==5.0.1
-      - streamlit==1.43.0
       - textalloc==1.1.8
       - wfork-streamlit-profiler==1.0.0
 prefix: /home/devin/mambaforge/envs/sonar

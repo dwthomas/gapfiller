@@ -29,6 +29,8 @@ find_package(GeographicLib REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GDAL REQUIRED gdal)
 
+find_package(s2 REQUIRED)
+
 # add_executable(preprocess_maps preprocess_maps.cpp)
 # target_include_directories(preprocess_maps PUBLIC ${GDAL_INCLUDE_DIRS})
 # target_link_directories(preprocess_maps PUBLIC ${GDAL_LIBRARY_DIRS})
@@ -40,4 +42,12 @@ target_include_directories(local_search PUBLIC ${GDAL_INCLUDE_DIRS})
 target_link_directories(local_search PUBLIC ${GDAL_LIBRARY_DIRS})
 target_link_libraries(local_search PUBLIC ${GDAL_LIBRARIES})
 TARGET_LINK_LIBRARIES(local_search PUBLIC ${Boost_LIBRARIES})
+
 TARGET_LINK_LIBRARIES(local_search PUBLIC GeographicLib)
+
+add_executable(local_search local_search.cpp dataset_load.cpp)
+TARGET_LINK_LIBRARIES(local_search_s2 PUBLIC s2::s2)
+
+
+add_executable(s2_test s2_test.cpp)
+target_link_libraries(s2_test PRIVATE s2::s2)
