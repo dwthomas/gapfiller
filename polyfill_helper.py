@@ -7,7 +7,6 @@ import argparse
 
 import geopandas as gpd
 
-import cv2
 
 from shapely import Polygon, LineString, Point
 from shapely.geometry import box
@@ -24,7 +23,6 @@ from matplotlib import pyplot as plt
 
 from io import StringIO
 
-# Enable faulthandler to print Python tracebacks on fatal errors (SIGSEGV, etc.)
 faulthandler.enable(file=sys.stderr, all_threads=True)
 
 def existing_dir(path_str: str) -> str:
@@ -158,7 +156,7 @@ def paired_interpolation(start, end, new_start, new_end, n=10):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Helper for gapfiller")
-    parser.add_argument("--polygon", type=str, required=True, help="Polygon file (GeoJSON)")
+    parser.add_argument("--polygon", type=str, default = None, help="Polygon file (GeoJSON)")
     parser.add_argument("--tmpdir", type=str, default="/tmp", help="Temporary directory for intermediate files. Default: /tmp")
     parser.add_argument("--keep-tmp", action="store_true", help="Keep temporary files after execution. Default: False")
     parser.add_argument(
@@ -175,8 +173,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--swath", action="store_true", help="Emit swath in addition to centerline.", default=False)
     parser.add_argument("--unmapped_file", type=str, help="Path to output unmapped raster file")
-    parser.add_argument("--output-path", type=str, help="Path to output path file (GeoJSON)")
-    parser.add_argument("--output-swath", type=str, help="Path to output swath file (GeoJSON)")
     args = parser.parse_args()
 
     transformer_localtowgs = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
@@ -185,7 +181,7 @@ if __name__ == "__main__":
 
     swath = args.swath
 
-    polygon = gpd.read_file(polygon_file)
+    polygon = gpd.read_file(polygon_file if polygon_file is not None else StringIO(sys.stdin.read()))
 
     centroid = polygon.centroid
     lon, lat = centroid.x, centroid.y
@@ -236,7 +232,7 @@ if __name__ == "__main__":
 
 
     lines = contours_gpd.loc[[cbl.index[0]]].explode(index_parts = True)
-    longest_ind = lines.length.sort_values()[::-1].index[0]
+    longest_ind = lines.to_crs("EPSG:3857").length.sort_values()[::-1].index[0]
 
     initial_line = lines.loc[[longest_ind]].to_crs(epsg=3857)
     initial_line['geometry'] = initial_line.geometry.simplify(tolerance=2000, preserve_topology=True)
@@ -273,7 +269,15 @@ if __name__ == "__main__":
         acc = 0
         prev_remaining_area = 1.0
         while acc < 25:
+            print(direction, acc, file = sys.stderr)
             new_segments = []
+            count = 0
+            for ((_, row), (_, row_wgs84))in zip(current_plan.to_crs("EPSG:3857").iterrows(), current_plan.iterrows()):
+                for ((start, end), (start_wgs_84, end_wgs84)) in zip(iter_segments(row.geometry), iter_segments(row_wgs84.geometry)):
+                    count += 1
+            print(f"Processing {count} segments", file=sys.stderr)
+            if count > 200:
+                break
             for ((_, row), (_, row_wgs84))in zip(current_plan.to_crs("EPSG:3857").iterrows(), current_plan.iterrows()):
                 for ((start, end), (start_wgs_84, end_wgs84)) in zip(iter_segments(row.geometry), iter_segments(row_wgs84.geometry)):
                     segment = [start, end]
@@ -317,19 +321,15 @@ if __name__ == "__main__":
             plans.append(current_plan)
             swaths.append(current_swath.to_crs("EPSG:4326"))
             acc += 1
-            print(direction, acc)    
             cds = gpd.GeoDataFrame( pd.concat(swaths))
             new_remaining = gpd.overlay(polygon.to_crs("EPSG:3857"), cds.to_crs("EPSG:3857"), "difference").area.values[0]/polygon.to_crs("EPSG:3857").area.values[0]
-            print(prev_remaining_area, new_remaining)
-            print("change in remaining area", prev_remaining_area - new_remaining)
             if prev_remaining_area - new_remaining < 0.001:
                 prev_remaining_area = new_remaining
                 break
             prev_remaining_area = new_remaining
-            # print(segment, normal, width)
     cut_down_plans = []
     cut_down_swaths = []
-    for plan in plans:
+    for plan in plans: 
         pruned_plan = gpd.overlay(plan.to_crs("EPSG:3857"), polygon.to_crs("EPSG:3857"), "intersection")
         if len(pruned_plan.explode()) >1:
             pruned_plan['geometry'] = pruned_plan.explode().iloc[1:].union_all()
@@ -339,6 +339,8 @@ if __name__ == "__main__":
             cut_down_swaths.append(m.simple_survey_line(pruned_plan.to_crs("EPSG:3857")))
 
     cds = gpd.GeoDataFrame( pd.concat(cut_down_swaths))
-    print(cds.to_crs("epsg:4326").to_json(), file=open(args.output_swath, "w"))
+    cds = cds.explode()
     cdp = gpd.GeoDataFrame( pd.concat(cut_down_plans))
-    print(cdp.to_crs("epsg:4326").to_json(), file=open(args.output_path, "w"))
+    cdp = cdp.explode()
+
+    print(gpd.GeoDataFrame(pd.concat([cdp.to_crs("epsg:4326"), cds.to_crs("epsg:4326")])).to_json())
