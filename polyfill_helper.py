@@ -56,6 +56,29 @@ def resample_linestring_keep_vertices(l: LineString, spacing: float) -> LineStri
 
     return LineString(new_coords) 
 
+def remove_loops(line):
+    coords = list(line.coords)
+    i = 2
+    while i < len(coords) - 1:
+        seg_i = LineString([coords[i], coords[i + 1]])
+        for j in range(i - 1):
+            seg_j = LineString([coords[j], coords[j + 1]])
+            inter = seg_i.intersection(seg_j)
+            if inter.is_empty:
+                continue
+            if inter.geom_type == "Point":
+                p = inter.coords[0]
+            else:                                  # collinear overlap / MultiPoint
+                p = min(inter.geoms if hasattr(inter, "geoms") else [inter],
+                        key=lambda g: seg_j.project(
+                            g if g.geom_type == "Point" else g.interpolate(0))
+                        ).coords[0]
+            coords = coords[:j + 1] + [p] + coords[i + 1:]
+            i = j + 1
+            break
+        else:
+            i += 1
+    return LineString(coords)
 
 def iter_segments(geom):
     if geom.geom_type == "LineString":
@@ -308,6 +331,7 @@ if __name__ == "__main__":
                     best_new_seg = new_segs[best_i]
                     new_segments.append((transformer_localtowgs.transform(best_new_seg[0][0], best_new_seg[0][1]) , transformer_localtowgs.transform(best_new_seg[1][0], best_new_seg[1][1])))
             connected_new_segments = connect_segments(new_segments)
+            connected_new_segments = remove_loops(connected_new_segments)
             current_plan = gpd.GeoDataFrame(geometry = [connected_new_segments], crs = "EPSG:4326").to_crs("EPSG:3857")
             
             fixed_line = gpd.GeoDataFrame(geometry = [current_plan.union_all()], crs = current_plan.crs).explode()
