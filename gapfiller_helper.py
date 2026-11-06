@@ -39,6 +39,18 @@ if __name__ == "__main__":
         help="Budget in meters.",
     )
     parser.add_argument(
+        "--gap-bonus-km",
+        type=float,
+        default=10.0,
+        help="Gap completion bonus in km of polygon-equivalent mapping length. Default: 10.",
+    )
+    parser.add_argument(
+        "--consider-gaps",
+        type=int,
+        default=5,
+        help="Maximum number of nearest unmapped lines to consider per iteration. Default: 5.",
+    )
+    parser.add_argument(
         "--gebco-dir",
         type=existing_dir,
         default="gebco_raster/",
@@ -62,7 +74,12 @@ if __name__ == "__main__":
 
     swath = args.swath
 
-    command = "{bin_path}/local_search --unmapped {unmapped} --land {land} --budget {budget} --plan {plan}"
+    command = (
+        "{bin_path}/local_search --unmapped-points {unmapped_points} "
+        "--unmapped-lines {unmapped_lines} --unmapped-polygons {unmapped_polygons} "
+        "--land {land} --budget {budget} --gap-bonus-km {gap_bonus_km} "
+        "--consider-gaps {consider_gaps} --plan {plan}"
+    )
 
     line = LineString([(source_lon, source_lat), (dest_lon, dest_lat)])
 
@@ -70,15 +87,18 @@ if __name__ == "__main__":
         geometry=[line],
         crs=utils.wgs84,
     )
+
     centroid = line_gdf.geometry.iloc[0].centroid
     metric_crs = utils.metric_crs(centroid.x)
     # print("initial length:", line_gdf.to_crs( metric_crs).length[0])
     # print("budget:", args.budget, "total:", float(args.budget) + line_gdf.to_crs( metric_crs).length[0])
-    budget = float(args.budget) + line_gdf.to_crs( metric_crs).length[0]
+    budget = float(args.budget) + line_gdf.to_crs(metric_crs).length[0]
+    
     metadata = {
         "initial_length_m": line_gdf.to_crs( metric_crs).length[0],
         "budget_m": float(args.budget),
     }
+
     gebco_folder = args.gebco_dir
     print("Calculating ellipse...", file=sys.stderr)
     envelope = utils.line_to_ellipse(line_gdf, width=float(args.budget), resolution = 4)  # Example width of 100 km+
@@ -89,21 +109,45 @@ if __name__ == "__main__":
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
         unmapped_json = json.loads(m.unmapped_polygons.to_json())
         unmapped_json["properties"] = {"unmapped_scores": m.unmapped_scores.values.tolist()}
-
         unmapped_output_path.write_text(json.dumps(unmapped_json))
+
+        unmapped_lines_output_path = Path(tmpdir) / "unmapped_lines.json"
+        unmapped_lines_json = json.loads(m.unmapped_lines.to_json())
+        unmapped_lines_json["properties"] = {
+            "unmapped_scores": [
+                m.width_at(line.centroid)
+                for line in m.unmapped_lines.geometry
+            ]
+        }
+        unmapped_lines_output_path.write_text(json.dumps(unmapped_lines_json))
+
+        unmapped_points_output_path = Path(tmpdir) / "unmapped_points.json"
+        unmapped_points_json = json.loads(m.unmapped_points.to_json())
+        unmapped_points_json["properties"] = {
+            "unmapped_scores": [
+                m.width_at(point)
+                for point in m.unmapped_points.geometry
+            ]
+        }
+        unmapped_points_output_path.write_text(json.dumps(unmapped_points_json))
+
         # print(m.unmapped_polygons.to_json(), flush=True)
         land_output_path = Path(tmpdir) / "land_polygons.json"
         land_output_path.write_text(m.land_polygons.to_json())
         plan_output_path = Path(tmpdir) / "plan.json"
         plan_output_path.write_text(line_gdf.to_json())
         cmd = command.format(
-                bin_path=args.bin_path,
-                unmapped=unmapped_output_path,
-                land=land_output_path,
-                budget=budget,
-                plan=plan_output_path,
-            )
-        # print(cmd)
+            bin_path=args.bin_path,
+            unmapped_points=unmapped_points_output_path,
+            unmapped_lines=unmapped_lines_output_path,
+            unmapped_polygons=unmapped_output_path,
+            land=land_output_path,
+            budget=budget,
+            gap_bonus_km=args.gap_bonus_km,
+            consider_gaps=args.consider_gaps,
+            plan=plan_output_path,
+        )
+        print(cmd)
         # Run the command, piping only stderr (capture stderr, let stdout go to the console)
         print("Searching for plans...", file=sys.stderr)
         result = subprocess.run(

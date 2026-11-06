@@ -1,94 +1,135 @@
 
 
 #include "dataset_load.hpp" 
+#include "dataset_load.hpp"
+#include <fstream>
 
-std::tuple<S2ShapeIndex, std::vector<double>> load_unmapped(const std::string& unmapped_file){
-  GDALDataset *ds_unmapped = (GDALDataset *)GDALOpenEx(
-      unmapped_file.c_str(), GDAL_OF_VECTOR, nullptr, nullptr, nullptr);
+#include <nlohmann/json.hpp>
 
-  if (!ds_unmapped) {
-    std::cerr << "Failed to open unmapped file: " << unmapped_file << std::endl;
-    exit(1);
-  }
+// std::tuple<S2ShapeIndex, std::vector<double>> load_unmapped(const std::string& unmapped_file){
+//   GDALDataset *ds_unmapped = (GDALDataset *)GDALOpenEx(
+//       unmapped_file.c_str(), GDAL_OF_VECTOR, nullptr, nullptr, nullptr);
 
-  std::vector<OGRPolygon *> unmapped_polygons;
-  std::vector<double> unmapped_polygon_beam_widths;
+//   if (!ds_unmapped) {
+//     std::cerr << "Failed to open unmapped file: " << unmapped_file << std::endl;
+//     exit(1);
+//   }
+
+//   std::vector<OGRPolygon *> unmapped_polygons;
+//   std::vector<double> unmapped_polygon_beam_widths;
 
 
-    // Extract polygons from unmapped dataset
-  for (int i = 0; i < ds_unmapped->GetLayerCount(); ++i) {
-    OGRLayer *layer = ds_unmapped->GetLayer(i);
-    layer->ResetReading();
-    OGRFeature *feature = nullptr;
+//     // Extract polygons from unmapped dataset
+//   for (int i = 0; i < ds_unmapped->GetLayerCount(); ++i) {
+//     OGRLayer *layer = ds_unmapped->GetLayer(i);
+//     layer->ResetReading();
+//     OGRFeature *feature = nullptr;
 
-    while ((feature = layer->GetNextFeature()) != nullptr) {
-      OGRGeometry *geom = feature->GetGeometryRef();
-      if (geom != nullptr &&
-          wkbFlatten(geom->getGeometryType()) == wkbPolygon) {
-        unmapped_polygons.push_back((OGRPolygon *)geom->clone());
-      }
-      OGRFeature::DestroyFeature(feature);
-    }
-  }
+//     while ((feature = layer->GetNextFeature()) != nullptr) {
+//       OGRGeometry *geom = feature->GetGeometryRef();
+//       if (geom != nullptr &&
+//           wkbFlatten(geom->getGeometryType()) == wkbPolygon) {
+//         unmapped_polygons.push_back((OGRPolygon *)geom->clone());
+//       }
+//       OGRFeature::DestroyFeature(feature);
+//     }
+//   }
   
-  // Read unmapped_polygon_beam_widths from JSON properties
-  std::ifstream unmapped_json_file(unmapped_file);
-  if (unmapped_json_file.is_open()) {
-    try {
-      nlohmann::json j = nlohmann::json::parse(unmapped_json_file);
+//   // Read unmapped_polygon_beam_widths from JSON properties
+//   std::ifstream unmapped_json_file(unmapped_file);
+//   if (unmapped_json_file.is_open()) {
+//     try {
+//       nlohmann::json j = nlohmann::json::parse(unmapped_json_file);
       
-      // std::cerr << "[DEBUG] Top-level JSON keys:\n";
-      // for (auto& [key, value] : j.items()) {
-      //   std::cerr << "  - " << key << "\n";
-      // }
+//       // std::cerr << "[DEBUG] Top-level JSON keys:\n";
+//       // for (auto& [key, value] : j.items()) {
+//       //   std::cerr << "  - " << key << "\n";
+//       // }
 
-      if (j.contains("features") && j["features"].is_array() && j["features"].size() > 0) {
-        // std::cerr << "[DEBUG] First feature keys:\n";
-        for (auto& [key, value] : j["features"][0].items()) {
-          // std::cerr << "  - " << key << "\n";
-        }
-        if (j["features"][0].contains("properties") && j["features"][0]["properties"].is_object()) {
-          // std::cerr << "[DEBUG] First feature properties keys:\n";
-          for (auto& [key, value] : j["features"][0]["properties"].items()) {
-            // std::cerr << "  - " << key << "\n";
-          }
-        }
-      }
+//       if (j.contains("features") && j["features"].is_array() && j["features"].size() > 0) {
+//         // std::cerr << "[DEBUG] First feature keys:\n";
+//         for (auto& [key, value] : j["features"][0].items()) {
+//           // std::cerr << "  - " << key << "\n";
+//         }
+//         if (j["features"][0].contains("properties") && j["features"][0]["properties"].is_object()) {
+//           // std::cerr << "[DEBUG] First feature properties keys:\n";
+//           for (auto& [key, value] : j["features"][0]["properties"].items()) {
+//             // std::cerr << "  - " << key << "\n";
+//           }
+//         }
+//       }
 
-      if (j.contains("properties") && j["properties"].is_object()) {
-        auto& props = j["properties"];
-        if (props.contains("unmapped_scores")) {
+//       if (j.contains("properties") && j["properties"].is_object()) {
+//         auto& props = j["properties"];
+//         if (props.contains("unmapped_scores")) {
           
-          if (props["unmapped_scores"].is_object()) {
-            for (auto& [key, value] : props["unmapped_scores"].items()) {
-              unmapped_polygon_beam_widths.push_back(value.get<double>());
-            }
-          } else if (props["unmapped_scores"].is_array()) {
-            for (auto& value : props["unmapped_scores"]) {
-              unmapped_polygon_beam_widths.push_back(value.get<double>());
-            }
-          } else {
-            std::cerr << "[DEBUG] unmapped_scores is neither an object nor an array!\n";
-          }
-        }
-      }
-    } catch (const std::exception& e) {
-      std::cerr << "Error reading unmapped_scores from JSON: " << e.what() << std::endl;
+//           if (props["unmapped_scores"].is_object()) {
+//             for (auto& [key, value] : props["unmapped_scores"].items()) {
+//               unmapped_polygon_beam_widths.push_back(value.get<double>());
+//             }
+//           } else if (props["unmapped_scores"].is_array()) {
+//             for (auto& value : props["unmapped_scores"]) {
+//               unmapped_polygon_beam_widths.push_back(value.get<double>());
+//             }
+//           } else {
+//             std::cerr << "[DEBUG] unmapped_scores is neither an object nor an array!\n";
+//           }
+//         }
+//       }
+//     } catch (const std::exception& e) {
+//       std::cerr << "Error reading unmapped_scores from JSON: " << e.what() << std::endl;
+//     }
+//     unmapped_json_file.close();
+//   }
+//   std::cerr << "Unmapped polygon beam widths: ";
+//   for (auto bw: unmapped_polygon_beam_widths) {
+//      std::cerr << bw << " ";
+//   }
+//   std::cerr << std::endl;
+//   return std::make_tuple(unmapped_polygons, unmapped_polygon_beam_widths, ds_unmapped);
+// }
+
+
+// S2ShapeIndex load_land(const std::string& land_file);
+
+// S2Polyline load_plan(const std::string& plan_file);
+
+static std::vector<double> load_unmapped_scores(const std::string &file_name) {
+  std::ifstream json_file(file_name);
+  if (!json_file.is_open()) {
+    std::cerr << "Failed to open unmapped GeoJSON properties: " << file_name
+              << std::endl;
+    std::exit(1);
+  }
+
+  try {
+    const nlohmann::json json = nlohmann::json::parse(json_file);
+    if (!json.contains("properties") ||
+        !json["properties"].is_object() ||
+        !json["properties"].contains("unmapped_scores")) {
+      return {};
     }
-    unmapped_json_file.close();
+
+    const auto &scores = json["properties"]["unmapped_scores"];
+    std::vector<double> result;
+    if (scores.is_array()) {
+      for (const auto &score : scores) {
+        result.push_back(score.get<double>());
+      }
+    } else if (scores.is_object()) {
+      for (const auto &[key, score] : scores.items()) {
+        result.push_back(score.get<double>());
+      }
+    } else {
+      throw std::runtime_error("unmapped_scores must be an array or object");
+    }
+    return result;
+  } catch (const std::exception &error) {
+    std::cerr << "Failed to read unmapped scores from " << file_name << ": "
+              << error.what() << std::endl;
+    std::exit(1);
   }
-  std::cerr << "Unmapped polygon beam widths: ";
-  for (auto bw: unmapped_polygon_beam_widths) {
-     std::cerr << bw << " ";
-  }
-  std::cerr << std::endl;
-  return std::make_tuple(unmapped_polygons, unmapped_polygon_beam_widths, ds_unmapped);
 }
-
-
-S2ShapeIndex load_land(const std::string& land_file);
-
-S2Polyline load_plan(const std::string& plan_file);
 
 std::tuple<std::vector<OGRPolygon *>, std::vector<double>, GDALDataset *> load_unmapped(const std::string& unmapped_file){
   GDALDataset *ds_unmapped = (GDALDataset *)GDALOpenEx(
@@ -171,6 +212,66 @@ std::tuple<std::vector<OGRPolygon *>, std::vector<double>, GDALDataset *> load_u
   }
   std::cerr << std::endl;
   return std::make_tuple(unmapped_polygons, unmapped_polygon_beam_widths, ds_unmapped);
+}
+
+std::tuple<std::vector<OGRPoint *>, std::vector<double>, GDALDataset *>
+load_unmapped_points(const std::string &unmapped_points_file) {
+  GDALDataset *ds_unmapped_points = static_cast<GDALDataset *>(GDALOpenEx(
+      unmapped_points_file.c_str(), GDAL_OF_VECTOR, nullptr, nullptr, nullptr));
+  if (!ds_unmapped_points) {
+    std::cerr << "Failed to open unmapped points file: "
+              << unmapped_points_file << std::endl;
+    std::exit(1);
+  }
+
+  std::vector<OGRPoint *> unmapped_points;
+  for (int i = 0; i < ds_unmapped_points->GetLayerCount(); ++i) {
+    OGRLayer *layer = ds_unmapped_points->GetLayer(i);
+    layer->ResetReading();
+    OGRFeature *feature = nullptr;
+
+    while ((feature = layer->GetNextFeature()) != nullptr) {
+      OGRGeometry *geom = feature->GetGeometryRef();
+      if (geom != nullptr &&
+          wkbFlatten(geom->getGeometryType()) == wkbPoint) {
+        unmapped_points.push_back(static_cast<OGRPoint *>(geom->clone()));
+      }
+      OGRFeature::DestroyFeature(feature);
+    }
+  }
+  return std::make_tuple(unmapped_points,
+                         load_unmapped_scores(unmapped_points_file),
+                         ds_unmapped_points);
+}
+
+std::tuple<std::vector<OGRLineString *>, std::vector<double>, GDALDataset *>
+load_unmapped_lines(const std::string &unmapped_lines_file) {
+  GDALDataset *ds_unmapped_lines = static_cast<GDALDataset *>(GDALOpenEx(
+      unmapped_lines_file.c_str(), GDAL_OF_VECTOR, nullptr, nullptr, nullptr));
+  if (!ds_unmapped_lines) {
+    std::cerr << "Failed to open unmapped lines file: "
+              << unmapped_lines_file << std::endl;
+    std::exit(1);
+  }
+
+  std::vector<OGRLineString *> unmapped_lines;
+  for (int i = 0; i < ds_unmapped_lines->GetLayerCount(); ++i) {
+    OGRLayer *layer = ds_unmapped_lines->GetLayer(i);
+    layer->ResetReading();
+    OGRFeature *feature = nullptr;
+
+    while ((feature = layer->GetNextFeature()) != nullptr) {
+      OGRGeometry *geom = feature->GetGeometryRef();
+      if (geom != nullptr &&
+          wkbFlatten(geom->getGeometryType()) == wkbLineString) {
+        unmapped_lines.push_back(static_cast<OGRLineString *>(geom->clone()));
+      }
+      OGRFeature::DestroyFeature(feature);
+    }
+  }
+  return std::make_tuple(unmapped_lines,
+                         load_unmapped_scores(unmapped_lines_file),
+                         ds_unmapped_lines);
 }
 
 std::tuple<std::vector<OGRPolygon *>, GDALDataset *> load_land(const std::string& land_file){

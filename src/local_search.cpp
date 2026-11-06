@@ -4,434 +4,79 @@
 #include <ogrsf_frmts.h>
 
 #include <algorithm>
-#include <boost/program_options.hpp>
 #include <cmath>
+#include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
-#include <unordered_map>
-
-#include <GeographicLib/Geodesic.hpp>
 
 #include "dataset_load.hpp"
+#include "local_search_options.hpp"
+#include "local_search_utils.hpp"
 
-
-
-namespace po = boost::program_options;
-
-struct IntersectionInfo {
-  // the intersection
-  OGRLineString *intersection;
-  // the segment of the path that produced the intersection
-  OGRLineString *path_segment;
-  // the unmapped region that produced the intersection
-  OGRPolygon * unmapped_region;
-  std::size_t index;
-};
-
-const GeographicLib::Geodesic& geod = GeographicLib::Geodesic::WGS84();
-
-// Calculate centroid of points, handling date line wrapping
-std::pair<double, double> calculateCentroid(const std::vector<OGRPoint>& points) {
-    if (points.empty()) {
-        return {0.0, 0.0};
-    }
-    
-    double sum_lat = 0.0;
-    double sum_lon_x = 0.0;  // sum of cos(lon)
-    double sum_lon_y = 0.0;  // sum of sin(lon)
-    
-    for (const auto& point : points) {
-        double lat = point.getY();
-        double lon = point.getX();
-        
-        sum_lat += lat;
-        
-        // Convert to radians and use unit vector approach for longitude
-        // This handles date line wrapping correctly
-        double lon_rad = lon * M_PI / 180.0;
-        sum_lon_x += std::cos(lon_rad);
-        sum_lon_y += std::sin(lon_rad);
-    }
-    
-    double n = static_cast<double>(points.size());
-    double avg_lat = sum_lat / n;
-    
-    // Calculate average longitude from the unit vectors
-    double avg_lon_rad = std::atan2(sum_lon_y / n, sum_lon_x / n);
-    double avg_lon = avg_lon_rad * 180.0 / M_PI;
-    
-    return {avg_lat, avg_lon};
-}
-
-OGRPoint * closestPointOnPolygon(const OGRPolygon &polygon, const OGRPoint &point) {
-    OGRPoint * closestPoint = new OGRPoint();
-    double minDist = std::numeric_limits<double>::infinity();
-
-    const OGRLinearRing * ring = polygon.getExteriorRing();
-    if (!ring) {
-        std::cerr << "Polygon does not have an exterior ring." << std::endl;
-        return nullptr;
-    }
-
-    int numPoints = ring->getNumPoints();
-    for (int i = 0; i < numPoints - 1; ++i) {
-        OGRPoint p1, p2;
-        ring->getPoint(i, &p1);
-        ring->getPoint(i + 1, &p2);
-
-        OGRLineString edge;
-        edge.addPoint(&p1);
-        edge.addPoint(&p2);
-
-        OGRPoint projectedPoint;
-        // edge.Project(&point);
-
-        double dist_along = edge.Project(&point); // distance from start of edge to projection
-        double edgeLen = edge.get_Length();
-        if (edgeLen > 0.0) {
-            double t = dist_along / edgeLen;
-            t = std::max(0.0, std::min(1.0, t)); // clamp just in case
-            projectedPoint.setX(p1.getX() + t * (p2.getX() - p1.getX()));
-            projectedPoint.setY(p1.getY() + t * (p2.getY() - p1.getY()));
-        } else {
-            // degenerate edge: use one endpoint
-            projectedPoint.setX(p1.getX());
-            projectedPoint.setY(p1.getY());
-        }
-
-        double dist = projectedPoint.Distance(&point);
-
-
-        if (dist < minDist) {
-            minDist = dist;
-            closestPoint->setX(projectedPoint.getX());
-            closestPoint->setY(projectedPoint.getY());
-        }
-    }
-
-    return closestPoint;
-}
-
-std::pair<OGRPolygon, int> add_to_polygon(const OGRPolygon &polygon,
-                                          const OGRPoint &point) {
-  std::vector<OGRPoint> pgon_points;
-  int min_i = 0;
-  double min_dist = std::numeric_limits<double>::infinity();
-  int n = polygon.getExteriorRing()->getNumPoints();
-  // std::cerr << "Polygon has " << n << " points." << std::endl;
-  for (int i = 0; i < n; i++) {
-    OGRPoint p1, p2;
-    polygon.getExteriorRing()->getPoint(i, &p1);
-    pgon_points.push_back(p1);
-    polygon.getExteriorRing()->getPoint((i + 1) % n, &p2);
-    OGRLineString edge;
-    edge.addPoint(&p1);
-    edge.addPoint(&p2);
-    double dist = edge.Distance(&point);
-    if (dist < min_dist) {
-      min_dist = dist;
-      min_i = i + 1;
-    }
-  }
-  pgon_points.insert(pgon_points.begin() + min_i, point);
-  OGRLinearRing ring;
-  for (const auto &p : pgon_points) {
-    ring.addPoint(&p);
-  }
-  ring.closeRings();
-  OGRPolygon new_polygon;
-  new_polygon.addRing(&ring);
-  return {new_polygon, min_i};
-}
-
-// double score(const std::vector<OGRPoint>& path, const std::vector<OGRPolygon *> &unmapped_polygons) {
-//     OGRLineString line;
-//     for (const auto& p : path) {
-//         line.addPoint(&p);    
-//     }
-//     double length = line.get_Length();
-//     return length;
-// }
-
-std::vector<OGRPoint> transform_line(const std::vector<OGRPoint>& line, OGRCoordinateTransformation *transform) {
-  std::vector<OGRPoint> transformed_line;
-  for (const auto& point : line) {
-    double x = point.getX();
-    double y = point.getY();
-    if (!transform->Transform(1, &x, &y)) {
-      std::cerr << "Failed to transform a plan point to AEQD." << std::endl;
-      continue;
-    }
-    transformed_line.emplace_back(x, y);
-  }
-  return transformed_line;
-}
-
-double true_length(OGRLineString * line, OGRCoordinateTransformation * inverse_transform){
-    std::vector<OGRPoint> line_points;
-    for (int i = 0; i < line->getNumPoints(); i++) {
-        OGRPoint p1;
-        line->getPoint(i, &p1);
-        line_points.push_back(p1);
-    }
-
-    auto wgs84_line = transform_line(line_points, inverse_transform); 
-
-    double length = 0.0;
-    if (line->getNumPoints() < 2) {
-        return length;
-    }
-    // std::cerr << "line first point: (" << line->getX(0) << ", " << line->getY(0) << ")" << std::endl;
-    for (int i = 0; i < wgs84_line.size() - 1; ++i) {
-        OGRPoint p1, p2;
-        p1 = wgs84_line[i];
-        p2 = wgs84_line[i + 1];
-
-        double lat1 = p1.getY();
-        double lon1 = p1.getX();
-        double lat2 = p2.getY();
-        double lon2 = p2.getX();
-
-        double distance_m;
-        geod.Inverse(lat1, lon1, lat2, lon2, distance_m);
-        // std::cerr << "Distance between (" << lat1 << ", " << lon1 << ") and (" << lat2 << ", " << lon2 << ") is " << distance_m << " meters." << std::endl;
-        length += distance_m;
-    }
-    return length;
-}
-
-double score(const std::vector<OGRPoint>& metric_path, const std::vector<OGRPolygon *> &metric_unmapped_polygons,
-                  const std::vector<double> &unmapped_polygon_beam_widths, OGRCoordinateTransformation *inverse_transform) {
-    OGRLineString line;
-    double sc = 0.0;
-    for (std::size_t pi = 0; pi < metric_unmapped_polygons.size(); pi++) {
-      auto polygon = metric_unmapped_polygons[pi];
-      auto pwidth = unmapped_polygon_beam_widths[pi];
-      for (size_t i = 0; i < metric_path.size() - 1; i++) {
-        OGRLineString segment;
-        segment.addPoint(&metric_path[i]);
-        segment.addPoint(&metric_path[i + 1]);
-
-        if (polygon->Intersects(&segment)) {
-          OGRGeometry *intersection = polygon->Intersection(&segment);
-          if (intersection != nullptr && wkbFlatten(intersection->getGeometryType()) == wkbLineString) {
-            IntersectionInfo info;
-            info.intersection = (OGRLineString *)intersection->clone();
-            sc += true_length(info.intersection, inverse_transform) * pwidth;
-          }
-          OGRGeometryFactory::destroyGeometry(intersection);
-        }
-      }
-    }
-    return sc;
-}
-
-
-std::vector<OGRPoint> simplify(const std::vector<OGRPoint>& path){
-  // remove loops in path
-  std::unordered_map<double, std::unordered_map<double, std::size_t>> last_seen;
-
-  for(std::size_t i = 0; i < path.size(); i++){
-    double x = path[i].getX();
-    double y = path[i].getY();
-    last_seen[x][y] = i;
-  }
-
-  std::vector<OGRPoint> simplified_path;
-
-  std::size_t i = 0;
-  while (i < path.size()){
-    double x = path[i].getX();
-    double y = path[i].getY();
-    simplified_path.push_back(path[i]);
-    i = last_seen[x][y] + 1;
-  }
-  return simplified_path;
-}
-
-
-std::pair<OGRLineString *, OGRLineString *>
-find_alternative_paths(const OGRPolygon &polygon, const OGRPoint &source,
-                       const OGRPoint &target, const OGRPoint &next_point) {
-  int source_index;
-  // std::cerr << "pgonsize " << polygon.getExteriorRing()->getNumPoints()
-  //           << std::endl;
-  auto x = add_to_polygon(polygon, target);
-  // std::cerr << "pgonsize " << x.first.getExteriorRing()->getNumPoints()
-  //           << std::endl;
-  x = add_to_polygon(x.first, source);
-  // std::cerr << "pgonsize " << x.first.getExteriorRing()->getNumPoints()
-  //           << std::endl;
-  source_index = x.second;
-  int min_index = 0;
-  double min_dist = std::numeric_limits<double>::infinity();
-  for (int i = 0; i < x.first.getExteriorRing()->getNumPoints(); i++) {
-    OGRPoint p;
-    x.first.getExteriorRing()->getPoint(i, &p);
-    double dist = p.Distance(&next_point);
-    if (dist < min_dist) {
-      min_dist = dist;
-      min_index = i;
-    }
-  }
-
-  std::vector<OGRPoint> line1;
-  int i = source_index;
-  while (i != min_index) {
-    OGRPoint p;
-    x.first.getExteriorRing()->getPoint(i, &p);
-    line1.push_back(p);
-    i = (i + 1) % x.first.getExteriorRing()->getNumPoints();
-  }
-  line1.push_back(next_point);
-
-  std::vector<OGRPoint> line2;
-  i = source_index;
-  // std::cerr << "size = " << x.first.getExteriorRing()->getNumPoints()
-  //           << std::endl;
-  while (i != min_index) {
-    OGRPoint p;
-    x.first.getExteriorRing()->getPoint(i, &p);
-    line2.push_back(p);
-    // std::cerr << "l2 point: (" << i << " " << p.getX() << ", " << p.getY()
-    //           << ")" << std::endl;
-    i = (i - 1);
-    if (i < 0) {
-      i = x.first.getExteriorRing()->getNumPoints() - 1;
-    }
-  }
-  line2.push_back(next_point);
-  OGRLineString *ls1 = new OGRLineString();
-  for (const auto &p : line1){
-    ls1->addPoint(&p);
-  }
-
-  OGRLineString *ls2 = new OGRLineString();
-  for (const auto &p : line2){
-    ls2->addPoint(&p);
-  }
-
-  return std::make_pair(ls1, ls2);
-}
-
-
-std::pair<double, OGRLineString *>
-local_improvement(const IntersectionInfo &info) {
-  // Find the endpoints of the intersection on the path segment
-  OGRPoint start_point, end_point;
-  info.intersection->StartPoint(&start_point);
-  info.intersection->EndPoint(&end_point);
-
-  // Find the edge where the start_point lies and traverse the edges to form two
-  // lines
-  OGRLineString *line1 = new OGRLineString();
-  OGRLineString *line2 = new OGRLineString();
-
-  OGRLinearRing *ring = info.unmapped_region->getExteriorRing();
-  if (!ring) {
-    std::cerr << "Polygon does not have an exterior ring." << std::endl;
-    return {0.0, nullptr};
-  }
-
-  std::cerr << "Polygon: ";
-  for (int i = 0; i < ring->getNumPoints(); ++i) {
-    OGRPoint p;
-    ring->getPoint(i, &p);
-    std::cerr << "(" << p.getX() << ", " << p.getY() << ") ";
-  }
-  std::cerr << std::endl;
-
-  int num_points = ring->getNumPoints();
-  bool start_found = false;
-
-  // Traverse the ring to find the edge containing start_point
-  for (int i = 0; i < num_points - 1; ++i) {
-    OGRPoint p1, p2;
-    ring->getPoint(i, &p1);
-    ring->getPoint(i + 1, &p2);
-
-    OGRLineString edge;
-    edge.addPoint(&p1);
-    edge.addPoint(&p2);
-
-    if (start_point.Within(&edge)) {
-      start_found = true;
-
-      // Build line1 from start_point to end_point
-      line1->addPoint(&start_point);
-      for (int j = i + 1; j < num_points; j++) {
-        OGRPoint next_point;
-        ring->getPoint(j, &next_point);
-        line1->addPoint(&next_point);
-        if (next_point.Equals(&end_point)) {
-          break;
-        }
-      }
-
-      // Build line2 in reverse direction from start_point to end_point
-      line2->addPoint(&start_point);
-      for (int j = i; j >= 0; --j) {
-        OGRPoint prev_point;
-        ring->getPoint(j, &prev_point);
-        line2->addPoint(&prev_point);
-        if (prev_point.Equals(&end_point)) {
-          break;
-        }
-      }
-
-      break;
-    }
-  }
-
-  if (!start_found) {
-    std::cerr << "Start point is not on the polygon's edge." << std::endl;
-    delete line1;
-    delete line2;
-    return {0.0, nullptr};
-  }
-
-  return {0.0, nullptr};
-}
-
-
+using local_search_utils::add_line_gap;
+using local_search_utils::calculateCentroid;
+using local_search_utils::closestPointOnPolygon;
+using local_search_utils::find_alternative_paths;
+using local_search_utils::IntersectionInfo;
+using local_search_utils::score;
+using local_search_utils::simplify;
+using local_search_utils::transform_line;
 
 
 int main(int argc, char *argv[]) {
-  std::string unmapped_file, land_file;
-
-  po::options_description desc("Allowed options");
-desc.add_options()
-    ("help,h", "produce help message")
-    ("unmapped", po::value<std::string>(&unmapped_file)->required(), "Unmapped geojson file")
-    ("land", po::value<std::string>(&land_file)->required(), "Land geojson file")
-    ("plan", po::value<std::string>()->required(), "Plan geojson file")
-    // ("dst_crs", po::value<std::string>()->required(), "Destination spatial reference system (CRS)")
-    ("budget", po::value<double>()->default_value(100000.0), "Budget for path length");
-
-  po::variables_map vm;
-  try {
-    po::store(po::parse_command_line(argc, argv, desc), vm);
-
-    if (vm.count("help")) {
-      std::cout << desc << "\n";
-      return 1;
-    }
-
-    po::notify(vm);
-  } catch (const po::error &e) {
-    std::cerr << "Error: " << e.what() << "\n";
-    std::cout << desc << "\n";
+  const auto parsed_options =
+      local_search_cli::parse_command_line(argc, argv);
+  if (!parsed_options) {
     return 1;
   }
-  double budget = vm["budget"].as<double>();
+  const auto &cli_options = *parsed_options;
 
   GDALAllRegister();
 
-  auto [unmapped_polygons, unmapped_polygon_beam_widths, ds_unmapped] = load_unmapped(unmapped_file);
-  auto [land_polygons, ds_land] = load_land(land_file);
-  
-  auto [initial_plan, line, planSrcSRS] = load_plan(vm["plan"].as<std::string>());
+  auto [unmapped_polygons, unmapped_polygon_beam_widths, ds_unmapped] =
+      load_unmapped(cli_options.unmapped_polygons_file);
+  auto [unmapped_lines, unmapped_line_beam_widths, ds_unmapped_lines] =
+      load_unmapped_lines(cli_options.unmapped_lines_file);
+  auto [unmapped_points, unmapped_point_beam_widths, ds_unmapped_points] =
+      load_unmapped_points(cli_options.unmapped_points_file);
+  auto [land_polygons, ds_land] = load_land(cli_options.land_file);
+
+  const double default_beam_width =
+      unmapped_polygon_beam_widths.empty()
+          ? 1.0
+          : std::accumulate(unmapped_polygon_beam_widths.begin(),
+                            unmapped_polygon_beam_widths.end(), 0.0) /
+                unmapped_polygon_beam_widths.size();
+  auto prepare_gap_beam_widths = [default_beam_width](
+                                     std::vector<double> &beam_widths,
+                                     std::size_t feature_count,
+                                     const char *feature_type) {
+    if (beam_widths.empty() && feature_count > 0) {
+      std::cerr << "Unmapped " << feature_type
+                << " have no beam-width scores; using " << default_beam_width
+                << " for gap bonuses." << std::endl;
+      beam_widths.assign(feature_count, default_beam_width);
+    }
+    if (beam_widths.size() != feature_count) {
+      std::cerr << "Unmapped " << feature_type
+                << " count does not match beam-width scores." << std::endl;
+      return false;
+    }
+    return true;
+  };
+  if (!prepare_gap_beam_widths(unmapped_line_beam_widths, unmapped_lines.size(),
+                               "lines") ||
+      !prepare_gap_beam_widths(unmapped_point_beam_widths,
+                               unmapped_points.size(), "points")) {
+    GDALClose(ds_unmapped);
+    GDALClose(ds_unmapped_lines);
+    GDALClose(ds_unmapped_points);
+    GDALClose(ds_land);
+    return 1;
+  }
+
+  auto [initial_plan, line, planSrcSRS] = load_plan(cli_options.plan_file);
 
 
   // Define the source (WGS84) and target (Mollweide) spatial references
@@ -439,6 +84,8 @@ desc.add_options()
   if (!unmapped_layer) {
     std::cerr << "Unmapped file does not contain any layers." << std::endl;
     GDALClose(ds_unmapped);
+    GDALClose(ds_unmapped_lines);
+    GDALClose(ds_unmapped_points);
     GDALClose(ds_land);
     return 1;
   }
@@ -447,6 +94,8 @@ desc.add_options()
     std::cerr << "Unmapped file does not have a valid spatial reference."
               << std::endl;
     GDALClose(ds_unmapped);
+    GDALClose(ds_unmapped_lines);
+    GDALClose(ds_unmapped_points);
     GDALClose(ds_land);
     return 1;
   }
@@ -475,6 +124,8 @@ desc.add_options()
   if (dstSRS.SetFromUserInput(merc_proj4.c_str()) != OGRERR_NONE) {
     std::cerr << "Failed to set Mercator spatial reference: " << merc_proj4 << std::endl;
     GDALClose(ds_unmapped);
+    GDALClose(ds_unmapped_lines);
+    GDALClose(ds_unmapped_points);
     GDALClose(ds_land);
     return 1;
   }
@@ -487,6 +138,10 @@ desc.add_options()
       OGRCreateCoordinateTransformation(&dstSRS, &planSrcSRS);
   if (!transform) {
     std::cerr << "Failed to create coordinate transformation to AEQD." << std::endl;
+    GDALClose(ds_unmapped);
+    GDALClose(ds_unmapped_lines);
+    GDALClose(ds_unmapped_points);
+    GDALClose(ds_land);
     return 1;
   }
 
@@ -501,6 +156,29 @@ desc.add_options()
     if (polygon->transform(transform) != OGRERR_NONE) {
       std::cerr << "Failed to transform an unmapped polygon to AEQD." << std::endl;
     }
+  }
+
+  std::vector<OGRLineString *> metric_unmapped_lines;
+  metric_unmapped_lines.reserve(unmapped_lines.size());
+  for (auto *feature_line : unmapped_lines) {
+    auto *metric_line =
+        static_cast<OGRLineString *>(feature_line->clone());
+    if (metric_line->transform(transform) != OGRERR_NONE) {
+      std::cerr << "Failed to transform an unmapped line to AEQD."
+                << std::endl;
+    }
+    metric_unmapped_lines.push_back(metric_line);
+  }
+
+  std::vector<OGRPoint *> metric_unmapped_points;
+  metric_unmapped_points.reserve(unmapped_points.size());
+  for (auto *feature_point : unmapped_points) {
+    auto *metric_point = static_cast<OGRPoint *>(feature_point->clone());
+    if (metric_point->transform(transform) != OGRERR_NONE) {
+      std::cerr << "Failed to transform an unmapped point to AEQD."
+                << std::endl;
+    }
+    metric_unmapped_points.push_back(metric_point);
   }
 
   // order unmapped polygons by area descending
@@ -520,6 +198,10 @@ desc.add_options()
       OGRCreateCoordinateTransformation(&planSrcSRS, &dstSRS);
   if (!planTransform) {
     std::cerr << "Failed to create plan coordinate transformation to AEQD." << std::endl;
+    GDALClose(ds_unmapped);
+    GDALClose(ds_unmapped_lines);
+    GDALClose(ds_unmapped_points);
+    GDALClose(ds_land);
     return 1;
   }
 
@@ -541,6 +223,9 @@ desc.add_options()
   int iternum = 0;
 
   std::vector<OGRPolygon> used_polys;
+  std::vector<bool> used_line_gaps(metric_unmapped_lines.size(), false);
+  std::vector<bool> used_point_gaps(metric_unmapped_points.size(), false);
+  double accumulated_gap_bonus = 0.0;
 
   double initial_length = -1;
 
@@ -558,8 +243,10 @@ desc.add_options()
       initial_length = line.get_Length();
     }
 
-    double remainder = budget - line.get_Length();
-    std::cerr << "C++ line length: " << line.get_Length() << " budget: " << budget << " remainder: " << remainder << std::endl;
+    double remainder = cli_options.budget - line.get_Length();
+    std::cerr << "C++ line length: " << line.get_Length() << " budget: "
+              << cli_options.budget << " remainder: " << remainder
+              << std::endl;
     int non_intersecting = 5;
 
     for (auto polygon : metric_unmapped_polygons) {
@@ -626,7 +313,160 @@ desc.add_options()
 
     std::vector<std::vector<OGRPoint>> options;
     std::vector<OGRPolygon *> used_polys_vector;
+    std::vector<int> option_line_indices;
+    std::vector<int> option_point_indices;
 
+    struct NearbyGapLine {
+      std::size_t line_index;
+      std::size_t insertion_index;
+      double centroid_distance;
+    };
+    std::vector<NearbyGapLine> nearby_gap_lines;
+    if (cli_options.consider_gaps > 0) {
+      for (std::size_t line_index = 0;
+           line_index < metric_unmapped_lines.size(); ++line_index) {
+        if (used_line_gaps[line_index] ||
+            metric_unmapped_lines[line_index]->getNumPoints() < 2) {
+          continue;
+        }
+
+        OGRPoint centroid;
+        if (metric_unmapped_lines[line_index]->Centroid(&centroid) !=
+            OGRERR_NONE) {
+          std::cerr << "Failed to calculate centroid for unmapped line "
+                    << line_index << "." << std::endl;
+          continue;
+        }
+
+        double closest_distance = std::numeric_limits<double>::infinity();
+        std::size_t closest_vertex = 0;
+        for (std::size_t vertex = 0; vertex + 1 < metric_plan.size(); ++vertex) {
+          const double distance = centroid.Distance(&metric_plan[vertex]);
+          if (distance < closest_distance) {
+            closest_distance = distance;
+            closest_vertex = vertex;
+          }
+        }
+        if (closest_distance <= remainder) {
+          nearby_gap_lines.push_back(
+              {line_index, closest_vertex, closest_distance});
+        }
+      }
+
+      std::sort(nearby_gap_lines.begin(), nearby_gap_lines.end(),
+                [](const NearbyGapLine &a, const NearbyGapLine &b) {
+                  return a.centroid_distance < b.centroid_distance;
+                });
+      if (nearby_gap_lines.size() >
+          static_cast<std::size_t>(cli_options.consider_gaps)) {
+        nearby_gap_lines.resize(
+            static_cast<std::size_t>(cli_options.consider_gaps));
+      }
+
+      for (const auto &nearby_line : nearby_gap_lines) {
+        auto candidate =
+            add_line_gap(metric_plan, nearby_line.insertion_index,
+                         *metric_unmapped_lines[nearby_line.line_index]);
+        OGRLineString candidate_line;
+        for (const auto &point : simplify(candidate)) {
+          candidate_line.addPoint(&point);
+        }
+        if (candidate_line.get_Length() < cli_options.budget) {
+          options.push_back(std::move(candidate));
+          used_polys_vector.push_back(nullptr);
+          option_line_indices.push_back(
+              static_cast<int>(nearby_line.line_index));
+          option_point_indices.push_back(-1);
+        }
+      }
+    }
+
+    struct NearbyGapPoint {
+      std::size_t point_index;
+      std::size_t insertion_index;
+      double distance;
+    };
+    std::vector<NearbyGapPoint> nearby_gap_points;
+    if (cli_options.consider_gaps > 0) {
+      for (std::size_t point_index = 0;
+           point_index < metric_unmapped_points.size(); ++point_index) {
+        if (used_point_gaps[point_index]) {
+          continue;
+        }
+
+        double closest_distance = std::numeric_limits<double>::infinity();
+        std::size_t closest_vertex = 0;
+        for (std::size_t vertex = 0; vertex < metric_plan.size(); ++vertex) {
+          const double distance =
+              metric_unmapped_points[point_index]->Distance(&metric_plan[vertex]);
+          if (distance < closest_distance) {
+            closest_distance = distance;
+            closest_vertex = vertex;
+          }
+        }
+        if (closest_distance <= remainder) {
+          nearby_gap_points.push_back(
+              {point_index, closest_vertex, closest_distance});
+        }
+      }
+
+      std::sort(nearby_gap_points.begin(), nearby_gap_points.end(),
+                [](const NearbyGapPoint &a, const NearbyGapPoint &b) {
+                  return a.distance < b.distance;
+                });
+      if (nearby_gap_points.size() >
+          static_cast<std::size_t>(cli_options.consider_gaps)) {
+        nearby_gap_points.resize(
+            static_cast<std::size_t>(cli_options.consider_gaps));
+      }
+
+      constexpr double point_gap_half_length_m = 1000.0;
+      for (const auto &nearby_point : nearby_gap_points) {
+        const auto &point = *metric_unmapped_points[nearby_point.point_index];
+        const auto insertion_index = nearby_point.insertion_index;
+        double dx = metric_plan[insertion_index].getX() - point.getX();
+        double dy = metric_plan[insertion_index].getY() - point.getY();
+        double direction_length = std::hypot(dx, dy);
+        if (direction_length == 0.0 && insertion_index > 0) {
+          dx = metric_plan[insertion_index - 1].getX() - point.getX();
+          dy = metric_plan[insertion_index - 1].getY() - point.getY();
+          direction_length = std::hypot(dx, dy);
+        }
+        if (direction_length == 0.0 &&
+            insertion_index + 1 < metric_plan.size()) {
+          dx = metric_plan[insertion_index + 1].getX() - point.getX();
+          dy = metric_plan[insertion_index + 1].getY() - point.getY();
+          direction_length = std::hypot(dx, dy);
+        }
+        if (direction_length == 0.0) {
+          continue;
+        }
+
+        OGRPoint toward_plan(
+            point.getX() + point_gap_half_length_m * dx / direction_length,
+            point.getY() + point_gap_half_length_m * dy / direction_length);
+        OGRPoint away_from_plan(
+            point.getX() - point_gap_half_length_m * dx / direction_length,
+            point.getY() - point_gap_half_length_m * dy / direction_length);
+        OGRLineString pseudo_line;
+        pseudo_line.addPoint(&toward_plan);
+        pseudo_line.addPoint(&away_from_plan);
+
+        auto candidate =
+            add_line_gap(metric_plan, insertion_index, pseudo_line);
+        OGRLineString candidate_line;
+        for (const auto &candidate_point : simplify(candidate)) {
+          candidate_line.addPoint(&candidate_point);
+        }
+        if (candidate_line.get_Length() < cli_options.budget) {
+          options.push_back(std::move(candidate));
+          used_polys_vector.push_back(nullptr);
+          option_line_indices.push_back(-1);
+          option_point_indices.push_back(
+              static_cast<int>(nearby_point.point_index));
+        }
+      }
+    }
 
 
     for (std::size_t i = 0; i < intersection_infos.size(); i++) {
@@ -718,11 +558,14 @@ desc.add_options()
                 line.addPoint(&p);    
             }
             double length = line.get_Length();
-            std::cerr << "Path length: " << length << " budget: " << budget << std::endl;
-            if(length < budget){
+            std::cerr << "Path length: " << length
+                      << " budget: " << cli_options.budget << std::endl;
+            if(length < cli_options.budget){
                 options.push_back(path);
                 used_polys_vector.push_back(
                     intersection_infos[i].unmapped_region);
+                option_line_indices.push_back(-1);
+                option_point_indices.push_back(-1);
             }
         }
     }
@@ -744,7 +587,7 @@ desc.add_options()
       std::cerr << "Final plan duration: " << dur << std::endl;
       std::cerr << "Initial plan duration: " << initial_length << std::endl; 
       std::cerr << "Improvement: " << dur - initial_length << std::endl;
-      std::cerr << "Budget: " << budget << std::endl << std::endl;      
+      std::cerr << "Budget: " << cli_options.budget << std::endl << std::endl;
       CPLFree(wkt);
       break;
     } 
@@ -752,8 +595,23 @@ desc.add_options()
     double best_score = 0.0;
     long best_i = -1;
     long i = 0;
-    for (const auto& option : options) {
+    for (std::size_t option_index = 0; option_index < options.size();
+         ++option_index) {
+      const auto &option = options[option_index];
       double s = score(option, metric_unmapped_polygons, unmapped_polygon_beam_widths, inverse_transform);
+      s += accumulated_gap_bonus;
+      if (option_line_indices[option_index] >= 0) {
+        const auto line_index =
+            static_cast<std::size_t>(option_line_indices[option_index]);
+        s += cli_options.gap_bonus_km * 1000.0 *
+             unmapped_line_beam_widths[line_index];
+      }
+      if (option_point_indices[option_index] >= 0) {
+        const auto point_index =
+            static_cast<std::size_t>(option_point_indices[option_index]);
+        s += cli_options.gap_bonus_km * 1000.0 *
+             unmapped_point_beam_widths[point_index];
+      }
         // std::cerr << "Score: " << s;
         // for (const auto &point : option) {
         //     std::cerr << " (" << point.getX() << ", " << point.getY() << ")\t";
@@ -765,8 +623,24 @@ desc.add_options()
         }
         ++i;
     }
-    if (best_score > score(metric_plan, metric_unmapped_polygons, unmapped_polygon_beam_widths, inverse_transform)) {
+    if (best_score > score(metric_plan, metric_unmapped_polygons, unmapped_polygon_beam_widths, inverse_transform) + accumulated_gap_bonus) {
       metric_plan = options[best_i];
+      if (option_line_indices[best_i] >= 0) {
+        const auto line_index =
+            static_cast<std::size_t>(option_line_indices[best_i]);
+        used_line_gaps[line_index] = true;
+        accumulated_gap_bonus +=
+            cli_options.gap_bonus_km * 1000.0 *
+            unmapped_line_beam_widths[line_index];
+      }
+      if (option_point_indices[best_i] >= 0) {
+        const auto point_index =
+            static_cast<std::size_t>(option_point_indices[best_i]);
+        used_point_gaps[point_index] = true;
+        accumulated_gap_bonus +=
+            cli_options.gap_bonus_km * 1000.0 *
+            unmapped_point_beam_widths[point_index];
+      }
       if (used_polys_vector[best_i]) {
         char *wkt = nullptr;
         used_polys_vector[best_i]->exportToWkt(&wkt);
@@ -775,7 +649,9 @@ desc.add_options()
       } else {
         std::cerr << "Using polygon: nullptr" << std::endl;
       }
-      used_polys.push_back(*used_polys_vector[best_i]);
+      if (used_polys_vector[best_i]) {
+        used_polys.push_back(*used_polys_vector[best_i]);
+      }
       std::cerr << "Updated plan with improved score: " << best_score
                  << std::endl;
        // print geojson of plan
@@ -821,8 +697,21 @@ desc.add_options()
   OCTDestroyCoordinateTransformation(transform);
 
  
-
+  for (auto *feature_line : unmapped_lines) {
+    OGRGeometryFactory::destroyGeometry(feature_line);
+  }
+  for (auto *feature_line : metric_unmapped_lines) {
+    OGRGeometryFactory::destroyGeometry(feature_line);
+  }
+  for (auto *feature_point : unmapped_points) {
+    OGRGeometryFactory::destroyGeometry(feature_point);
+  }
+  for (auto *feature_point : metric_unmapped_points) {
+    OGRGeometryFactory::destroyGeometry(feature_point);
+  }
   GDALClose(ds_unmapped);
+  GDALClose(ds_unmapped_lines);
+  GDALClose(ds_unmapped_points);
   GDALClose(ds_land);
 
   return 0;
