@@ -51,6 +51,12 @@ if __name__ == "__main__":
         help="Maximum number of nearest unmapped lines to consider per iteration. Default: 5.",
     )
     parser.add_argument(
+        "--n-agents",
+        type=int,
+        default=1,
+        help="Number of agents. Default: 1.",
+    )
+    parser.add_argument(
         "--gebco-dir",
         type=existing_dir,
         default="gebco_raster/",
@@ -62,6 +68,7 @@ if __name__ == "__main__":
         default="EM302nautilus.txt",
         help="Extinction curve filename or comma-separated extinction curve. Default: EM302nautilus.txt\nExample: --extinction EM302nautilus.txt or --extinction 0.0 5.6,1608.0 6.6,3000.0 3.133,4000.0 2.205,5000.0 1.644,6000.0 1.198, ..."
     )
+
     parser.add_argument("--swath", action="store_true", help="Emit swath in addition to centerline.", default=False)
     parser.add_argument("--bin-path", type=str, default="src/release", help="Location of local_search")
     parser.add_argument("--unmapped_file", type=str, help="Path to output unmapped raster file")
@@ -103,7 +110,7 @@ if __name__ == "__main__":
     print("Calculating ellipse...", file=sys.stderr)
     envelope = utils.line_to_ellipse(line_gdf, width=float(args.budget), resolution = 4)  # Example width of 100 km+
     # print("envelope", envelope.to_crs(utils.wgs84).to_json())
-    m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction, unmapped_raster_path=args.unmapped_file)
+    m = utils.Map(envelope, gebco_folder, extinction_file=args.extinction, unmapped_raster_path=args.unmapped_file, n_agents = args.n_agents)
     with tempfile.TemporaryDirectory(delete=not args.keep_tmp, dir=args.tmpdir) as tmpdir:
         # print(tmpdir)
         unmapped_output_path = Path(tmpdir) / "unmapped_polygons.json"
@@ -175,21 +182,47 @@ if __name__ == "__main__":
         output_gdf = gpd.GeoDataFrame.from_features(fixed["features"], crs=utils.wgs84)
         metadata["final_length_m"] = output_gdf.to_crs(metric_crs).length[0]
         metadata["remaining budget_m"] = metadata["initial_length_m"] + metadata["budget_m"] - metadata["final_length_m"]
+        centerline_gdf = output_gdf
+        if args.n_agents == 2:
+            split_plan = utils.split_plan_between_agents(m, centerline_gdf)
+            output_gdf = gpd.GeoDataFrame.from_features(
+                split_plan["features"], crs=utils.wgs84
+            )
         if swath:
-            swath_gdf = m.simple_survey_line(output_gdf.to_crs(metric_crs))
-            swath_gdf = swath_gdf.to_crs( metric_crs)
+            if args.n_agents == 2:
+                agent_swaths = [
+                    m.simple_survey_line(
+                        gpd.GeoDataFrame(
+                            geometry=[agent_line], crs=utils.wgs84
+                        ).to_crs(metric_crs),
+                        width_multiplier=1 / args.n_agents,
+                    )
+                    for agent_line in output_gdf.geometry
+                ]
+                swath_gdf = gpd.GeoDataFrame(
+                    pd.concat(agent_swaths, ignore_index=True), crs=utils.wgs84
+                )
+            else:
+                swath_gdf = m.simple_survey_line(
+                    centerline_gdf.to_crs(metric_crs)
+                )
+            swath_gdf = swath_gdf.to_crs(metric_crs)
                         # print(output_gdf.area[1]/output_gdf.length[0])
             buf = 2500
             swath_gdf['geometry'] = swath_gdf['geometry'].buffer(buf, cap_style = 'round', join_style = 'round')
             swath_gdf['geometry'] = swath_gdf['geometry'].simplify(buf, preserve_topology=True)
-            swath_gdf['geometry'] = swath_gdf['geometry'].union_all()
+            if args.n_agents != 2:
+                swath_gdf['geometry'] = swath_gdf['geometry'].union_all()
             swath_gdf['geometry'] = swath_gdf['geometry'].buffer(-buf, cap_style = 'round', join_style = 'round')
             swath_gdf['geometry'] = swath_gdf['geometry'].simplify(.5*buf, preserve_topology=True)
             # print(output_gdf.crs, swath_gdf.crs)
             output_gdf = gpd.GeoDataFrame(pd.concat([output_gdf, swath_gdf.to_crs(utils.wgs84)], ignore_index=True), crs =  utils.wgs84)
 
             initial_area = m.unmapped_polygons.to_crs(metric_crs).area.sum()
-            new_unmapped = m.unmapped_polygons.to_crs(metric_crs).overlay(swath_gdf.to_crs(metric_crs), how='difference')
+            swath_union = gpd.GeoDataFrame(
+                geometry=[swath_gdf.geometry.union_all()], crs=metric_crs
+            )
+            new_unmapped = m.unmapped_polygons.to_crs(metric_crs).overlay(swath_union, how='difference')
             metadata["newly_unmapped_area_m2"] = initial_area - new_unmapped.area.sum()
 
         geojson_dict = json.loads(output_gdf.to_json())
